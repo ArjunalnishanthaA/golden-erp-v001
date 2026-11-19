@@ -10,10 +10,13 @@
   },
   "dependencies": {
     "lucide-react": "*",
+    "qrcode": "*",
     "react": "*",
     "react-dom": "*"
   },
   "devDependencies": {
+    "@types/node": "*",
+    "@types/qrcode": "*",
     "@types/react": "*",
     "@types/react-dom": "*",
     "@vitejs/plugin-react": "*",
