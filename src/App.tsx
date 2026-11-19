@@ -189,6 +189,7 @@ export default function App() {
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   const [scannerInput, setScannerInput] = useState('');
+  const [lastRawKeyEvent, setLastRawKeyEvent] = useState('');
   const [scanError, setScanError] = useState('');
   const [scannedBill, setScannedBill] = useState<ScannedBillRecord | null>(null);
   const [scanHistory, setScanHistory] = useState<ScannedBillRecord[]>([]);
@@ -223,12 +224,13 @@ export default function App() {
   };
 
   const handleScannerKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    setLastRawKeyEvent(`Key: "${e.key}" | Code: "${e.code}" | Value so far: "${scannerInput}"`);
     if (e.key === 'Enter') {
       e.preventDefault();
       if (scannerInput.trim()) {
         handleQrDecoded(scannerInput);
       } else {
-        setScanError('QR කෝඩ් එක scan කරන්න හෝ text එක enter කරන්න.');
+        setScanError('Enter වැටුණා, නමුත් input box එක හිස් (scanner එකෙන් text එකක් type වුණේ නැහැ).');
       }
     }
   };
@@ -705,4 +707,201 @@ export default function App() {
         )}
 
         {tab === 'scan' && (
-          <div className
+          <div className="card no-print">
+            <h2 style={{ margin: 0, fontSize: 16, color: '#fbbf24' }}>
+              QR Scanner Gun Enter & Bill Details Viewer
+            </h2>
+            <p className="sub">
+              QR Scanner එකෙන් scan කරන්න. පහළින් scanner එකෙන් එන raw key/text එක පෙනෙයි.
+            </p>
+
+            <div style={{ marginTop: 12 }}>
+              <input
+                ref={scannerInputRef}
+                className="scan-inp"
+                value={scannerInput}
+                onChange={e => {
+                  setScannerInput(e.target.value);
+                  if (scanError) setScanError('');
+                }}
+                onKeyDown={handleScannerKeyDown}
+                placeholder="Scan QR here & press Enter..."
+                autoFocus
+              />
+              {lastRawKeyEvent && (
+                <div className="payload-box">Scanner Debug: {lastRawKeyEvent}</div>
+              )}
+              <div className="row" style={{ marginTop: 10, justifyContent: 'flex-start' }}>
+                <button
+                  className="btn"
+                  onClick={() => {
+                    if (scannerInput.trim()) {
+                      handleQrDecoded(scannerInput);
+                    } else {
+                      setScanError('Input box එක හිස් — scanner එකෙන් text එකක් වැටුණේ නැහැ.');
+                      scannerInputRef.current?.focus();
+                    }
+                  }}
+                >
+                  Enter / Load Bill
+                </button>
+                <button
+                  className="btn-dark"
+                  onClick={() => {
+                    setScannerInput('');
+                    setLastRawKeyEvent('');
+                    setScanError('');
+                    scannerInputRef.current?.focus();
+                  }}
+                >
+                  Clear & Focus Scanner
+                </button>
+              </div>
+            </div>
+
+            {scanError && (
+              <div style={{ marginTop: 10, color: '#fbbf24', fontSize: 12 }}>{scanError}</div>
+            )}
+
+            {scannedBill && (
+              <div className="detail-box">
+                <div className="row" style={{ marginBottom: 10 }}>
+                  <strong style={{ color: '#34d399', fontSize: 14 }}>
+                    Scanned Bill Details ({scannedBill.invoiceNo})
+                  </strong>
+                  <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                    Scanned at {scannedBill.scannedAt}
+                  </span>
+                </div>
+
+                <div className="grid3">
+                  <div className="detail-item">
+                    <span>Invoice No</span>
+                    <b>{scannedBill.invoiceNo}</b>
+                  </div>
+                  <div className="detail-item">
+                    <span>Agency</span>
+                    <b>{scannedBill.agencyCode}</b>
+                  </div>
+                  <div className="detail-item">
+                    <span>Status</span>
+                    <b>{scannedBill.status}</b>
+                  </div>
+                  <div className="detail-item">
+                    <span>Shop / Customer</span>
+                    <b>{scannedBill.shopName}</b>
+                  </div>
+                  <div className="detail-item">
+                    <span>Bill Date</span>
+                    <b>{scannedBill.billDate}</b>
+                  </div>
+                  <div className="detail-item">
+                    <span>Items / Net Amount</span>
+                    <b>
+                      {scannedBill.itemCount} items • LKR {scannedBill.netAmount}
+                    </b>
+                  </div>
+                </div>
+
+                <div className="payload-box">Raw QR Data: {scannedBill.rawText}</div>
+
+                <div className="row" style={{ marginTop: 12, justifyContent: 'flex-start' }}>
+                  <button className="btn-green" onClick={() => updateScannedStatus('Paid')}>
+                    Mark Paid
+                  </button>
+                  <button className="btn-amber" onClick={() => updateScannedStatus('Half')}>
+                    Mark Half
+                  </button>
+                  <button className="btn-red" onClick={() => updateScannedStatus('Unpaid')}>
+                    Mark Unpaid
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {scanHistory.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#cbd5e1', marginBottom: 8 }}>
+                  Recently Scanned Bills ({scanHistory.length})
+                </div>
+                {scanHistory.map((item, i) => (
+                  <div
+                    key={`${item.invoiceNo}-${i}`}
+                    onClick={() => setScannedBill(item)}
+                    style={{
+                      background: '#0f172a',
+                      border: '1px solid #334155',
+                      borderRadius: 8,
+                      padding: '8px 12px',
+                      marginBottom: 8,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      fontSize: 12
+                    }}
+                  >
+                    <div>
+                      <b style={{ color: '#fbbf24' }}>{item.invoiceNo}</b> — {item.shopName} (LKR{' '}
+                      {item.netAmount})
+                    </div>
+                    <span style={{ fontWeight: 700, color: '#34d399' }}>{item.status}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {printDoc && (
+        <div className="modal-bg">
+          <div className="modal-box">
+            <div
+              className="row no-print"
+              style={{ paddingBottom: 10, borderBottom: '1px solid #e2e8f0' }}
+            >
+              <div>
+                <strong style={{ fontSize: 14 }}>{printDoc.fileName}</strong>
+                <div style={{ fontSize: 11, color: '#475569' }}>
+                  {printDoc.pages.length} Pages total • {qrPagesCount(printDoc)} Bill QR(s) placed automatically
+                </div>
+              </div>
+              <div className="row">
+                <button className="btn" onClick={() => window.print()}>
+                  Print Now
+                </button>
+                <button className="btn-dark" onClick={() => setPrintDoc(null)}>
+                  Close
+                </button>
+              </div>
+            </div>
+
+            {printDoc.pages.map(pg => (
+              <div key={pg.pageNumber} className="page-sheet">
+                {pg.hasQr && pg.qrDataUrl && (
+                  <div className="top-right-qr">
+                    <img src={pg.qrDataUrl} alt={pg.details.invoiceNo} />
+                    <div>{pg.details.invoiceNo}</div>
+                  </div>
+                )}
+
+                {pg.imageUrl ? (
+                  <img
+                    className="bill-img"
+                    src={pg.imageUrl}
+                    alt={`${printDoc.fileName} Page ${pg.pageNumber}`}
+                  />
+                ) : (
+                  <div style={{ padding: 32, textAlign: 'center', fontSize: 13 }}>
+                    Page {pg.pageNumber} ({pg.details.invoiceNo})
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
