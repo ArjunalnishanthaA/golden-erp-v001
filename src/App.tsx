@@ -406,13 +406,12 @@ export default function App() {
         lastInvoiceSeen !== '' &&
         parsed.details.invoiceNo.toUpperCase() === lastInvoiceSeen.toUpperCase();
 
-      // Always show QR automatically on bill start pages (not 2nd/continuation pages of the same bill)
       const shouldShowQr = !parsed.isContinuationPage && !isSameAsPrevInvoice;
 
       lastInvoiceSeen = parsed.details.invoiceNo;
 
       const payload = buildFullBillQrPayload(agencyCode, parsed.details);
-      const qrDataUrl = await makeRealQrDataUrl(payload);
+      const qrDataUrl = shouldShowQr ? await makeRealQrDataUrl(payload) : '';
 
       pages.push({
         pageNumber: p,
@@ -512,37 +511,10 @@ export default function App() {
             if (p.pageNumber !== pageNumber) return p;
             const nextDetails: BillDetails = { ...p.details, ...patch };
             const nextPayload = buildFullBillQrPayload(agencyCode, nextDetails);
-            const nextQr = await makeRealQrDataUrl(nextPayload);
+            const nextQr = p.showQr ? await makeRealQrDataUrl(nextPayload) : '';
             return {
               ...p,
               details: nextDetails,
-              qrPayload: nextPayload,
-              qrDataUrl: nextQr
-            };
-          })
-        );
-        return { ...d, pages: nextPages };
-      })
-    );
-    setDocs(updated);
-    if (printDoc && printDoc.id === docId) {
-      setPrintDoc(updated.find(x => x.id === docId) || null);
-    }
-  };
-
-  const togglePageQr = async (docId: string, pageNumber: number) => {
-    const updated = await Promise.all(
-      docs.map(async d => {
-        if (d.id !== docId) return d;
-        const nextPages = await Promise.all(
-          d.pages.map(async p => {
-            if (p.pageNumber !== pageNumber) return p;
-            const nextShow = !p.showQr;
-            const nextPayload = buildFullBillQrPayload(agencyCode, p.details);
-            const nextQr = await makeRealQrDataUrl(nextPayload);
-            return {
-              ...p,
-              showQr: nextShow,
               qrPayload: nextPayload,
               qrDataUrl: nextQr
             };
@@ -567,7 +539,7 @@ export default function App() {
           pages: await Promise.all(
             d.pages.map(async p => {
               const payload = buildFullBillQrPayload(agencyCode, p.details);
-              const qrDataUrl = await makeRealQrDataUrl(payload);
+              const qrDataUrl = p.showQr ? await makeRealQrDataUrl(payload) : '';
               return { ...p, qrPayload: payload, qrDataUrl };
             })
           )
@@ -758,167 +730,4 @@ export default function App() {
                               className="inp"
                               value={firstQrPage.details.shopName}
                               onChange={e =>
-                                updatePageDetails(d.id, firstQrPage.pageNumber, {
-                                  shopName: e.target.value
-                                })
-                              }
-                              placeholder="Shop / Customer"
-                            />
-                            <input
-                              className="inp"
-                              value={firstQrPage.details.billDate}
-                              onChange={e =>
-                                updatePageDetails(d.id, firstQrPage.pageNumber, {
-                                  billDate: e.target.value
-                                })
-                              }
-                              placeholder="Date"
-                            />
-                          </div>
-
-                          <div className="grid3">
-                            <input
-                              className="inp"
-                              value={firstQrPage.details.itemCount}
-                              onChange={e =>
-                                updatePageDetails(d.id, firstQrPage.pageNumber, {
-                                  itemCount: e.target.value
-                                })
-                              }
-                              placeholder="Items Count"
-                            />
-                            <input
-                              className="inp"
-                              value={firstQrPage.details.netAmount}
-                              onChange={e =>
-                                updatePageDetails(d.id, firstQrPage.pageNumber, {
-                                  netAmount: e.target.value,
-                                  totalAmount: firstQrPage.details.totalAmount || e.target.value
-                                })
-                              }
-                              placeholder="Net / Total (LKR)"
-                            />
-                            <select
-                              className="inp"
-                              value={firstQrPage.details.status}
-                              onChange={e =>
-                                updatePageDetails(d.id, firstQrPage.pageNumber, {
-                                  status: e.target.value as 'Unpaid' | 'Half' | 'Paid'
-                                })
-                              }
-                            >
-                              <option value="Unpaid">Unpaid</option>
-                              <option value="Half">Half</option>
-                              <option value="Paid">Paid</option>
-                            </select>
-                          </div>
-
-                          <div className="payload-box">QR Data: {firstQrPage.qrPayload}</div>
-                        </>
-                      )}
-                    </div>
-
-                    {firstQrPage?.qrDataUrl && (
-                      <div className="qr-card">
-                        <img src={firstQrPage.qrDataUrl} alt={firstQrPage.details.invoiceNo} />
-                        <div className="qr-lbl">{firstQrPage.details.invoiceNo}</div>
-                      </div>
-                    )}
-                  </div>
-
-                  <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                    <button className="btn" onClick={() => setPrintDoc(d)}>
-                      Preview & Print ({d.pages.length || 1} Pages)
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {tab === 'scan' && (
-          <div className="card no-print">
-            <h2 style={{ margin: 0, fontSize: 16, color: '#fbbf24' }}>
-              System QR Scanner & Bill Details Viewer
-            </h2>
-            <p className="sub">
-              කැමරාවෙන් හෝ QR පින්තූරයකින් බිලේ QR කෝඩ් එක scan කර, සියලු විස්තර මෙතැනින් බලා Paid / Half / Unpaid කරන්න.
-            </p>
-
-            <div className="row" style={{ marginTop: 12, justifyContent: 'flex-start' }}>
-              {!cameraOn ? (
-                <button className="btn" onClick={startCameraScanner}>
-                  Turn On Camera Scanner
-                </button>
-              ) : (
-                <button className="btn-red" onClick={stopCamera}>
-                  Stop Camera
-                </button>
-              )}
-
-              <button className="btn-dark" onClick={() => qrImgInputRef.current?.click()}>
-                Upload QR Photo
-              </button>
-              <input
-                ref={qrImgInputRef}
-                type="file"
-                accept="image/*"
-                style={{ display: 'none' }}
-                onChange={handleScanQrImageFile}
-              />
-            </div>
-
-            {scanError && (
-              <div style={{ marginTop: 10, color: '#fbbf24', fontSize: 12 }}>{scanError}</div>
-            )}
-
-            {cameraOn && (
-              <div style={{ marginTop: 14, maxWidth: 380 }}>
-                <video
-                  ref={videoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  style={{
-                    width: '100%',
-                    borderRadius: 12,
-                    border: '2px solid #f59e0b',
-                    background: '#000'
-                  }}
-                />
-                <canvas ref={canvasRef} style={{ display: 'none' }} />
-              </div>
-            )}
-
-            {scannedBill && (
-              <div className="detail-box">
-                <div className="row" style={{ marginBottom: 10 }}>
-                  <strong style={{ color: '#34d399', fontSize: 14 }}>
-                    Scanned Bill Details ({scannedBill.invoiceNo})
-                  </strong>
-                  <span style={{ fontSize: 11, color: '#94a3b8' }}>
-                    Scanned at {scannedBill.scannedAt}
-                  </span>
-                </div>
-
-                <div className="grid3">
-                  <div className="detail-item">
-                    <span>Invoice No</span>
-                    <b>{scannedBill.invoiceNo}</b>
-                  </div>
-                  <div className="detail-item">
-                    <span>Agency</span>
-                    <b>{scannedBill.agencyCode}</b>
-                  </div>
-                  <div className="detail-item">
-                    <span>Status</span>
-                    <b>{scannedBill.status}</b>
-                  </div>
-                  <div className="detail-item">
-                    <span>Shop / Customer</span>
-                    <b>{scannedBill.shopName}</b>
-                  </div>
-                  <div className="detail-item">
-                    <span>Bill Date</span>
-                    <b>{scannedBill.billDate}</b>
+                                update
