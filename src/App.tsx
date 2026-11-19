@@ -1,432 +1,169 @@
-import React, { useState, useRef, useEffect } from 'react';
-import {
-  Fuel,
-  Wallet,
-  QrCode,
-  Scan,
-  Clock,
-  Camera,
-  RefreshCw,
-  Calendar as CalendarIcon,
-  Printer,
-  X,
-  RotateCcw,
-  FileUp,
-  FileText,
-  Mail,
-  CheckCircle2,
-  Loader2,
-  AlertCircle
-} from 'lucide-react';
+import React, { useState, useRef } from 'react';
 
-interface WholesaleOrder {
-  id: string;
-  agency: 'Anuradhapura' | 'Mihintale';
-  shopName: string;
-  category: 'Supermarket' | 'Wholesale';
-  totalAmount: number;
-  discountPercentage: number;
-  netAmount: number;
-  date: string;
-  status: 'Pending Approval' | 'Dispatched';
-  paymentStatus: 'Unpaid' | 'Partially Paid' | 'Fully Paid';
-  paidAmount: number;
-}
-
-interface PdfPageBill {
+interface PdfPageItem {
   pageNumber: number;
   imageUrl: string;
   invoiceNo: string;
-  shopName: string;
   amount: string;
-  paymentStatus: 'Unpaid' | 'Partially Paid' | 'Fully Paid';
+  status: 'Unpaid' | 'Half' | 'Paid';
 }
 
-interface UploadedBillItem {
+interface UploadedPdfDoc {
   id: string;
   fileName: string;
-  fileType: 'pdf' | 'image';
   dataUrl: string;
   invoiceNo: string;
-  shopName: string;
   amount: string;
-  paymentStatus: 'Unpaid' | 'Partially Paid' | 'Fully Paid';
-  pages: PdfPageBill[];
-  isRendering?: boolean;
-  renderError?: string;
+  status: 'Unpaid' | 'Half' | 'Paid';
+  pages: PdfPageItem[];
+  loading: boolean;
+  note?: string;
 }
 
-const STORAGE_KEY = 'golden_distributors_erp_orders_v5';
-const PDFJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-const PDFJS_WORKER_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-const JSQR_CDN = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js';
+const PDFJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+const WORKER_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-const getLocalDateString = (offsetDays = 0): string => {
-  const d = new Date();
-  d.setDate(d.getDate() + offsetDays);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
-
-const loadExternalScript = (src: string, timeoutMs = 12000): Promise<void> => {
+function loadScriptOnce(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const existing = document.querySelector(`script[src="${src}"]`) as HTMLScriptElement | null;
-    if (existing) {
-      if (existing.dataset.loaded === 'true') {
-        resolve();
-        return;
-      }
-      const timer = window.setTimeout(() => reject(new Error(`Timeout loading ${src}`)), timeoutMs);
-      existing.addEventListener('load', () => {
-        window.clearTimeout(timer);
-        resolve();
-      });
-      existing.addEventListener('error', () => {
-        window.clearTimeout(timer);
-        reject(new Error(`Failed to load ${src}`));
-      });
+    const prev = document.querySelector(`script[src="${src}"]`) as HTMLScriptElement | null;
+    if (prev) {
+      if (prev.dataset.ready === '1') return resolve();
+      prev.addEventListener('load', () => resolve(), { once: true });
+      prev.addEventListener('error', () => reject(new Error('Script load failed')), { once: true });
       return;
     }
-
-    const script = document.createElement('script');
-    script.src = src;
-    script.async = true;
-    const timer = window.setTimeout(() => reject(new Error(`Timeout loading ${src}`)), timeoutMs);
-
-    script.onload = () => {
-      window.clearTimeout(timer);
-      script.dataset.loaded = 'true';
+    const s = document.createElement('script');
+    s.src = src;
+    s.async = true;
+    const t = window.setTimeout(() => reject(new Error('Timeout')), 10000);
+    s.onload = () => {
+      window.clearTimeout(t);
+      s.dataset.ready = '1';
       resolve();
     };
-    script.onerror = () => {
-      window.clearTimeout(timer);
-      reject(new Error(`Failed to load ${src}`));
+    s.onerror = () => {
+      window.clearTimeout(t);
+      reject(new Error('Failed'));
     };
-    document.head.appendChild(script);
+    document.head.appendChild(s);
   });
-};
+}
+
+function makeQrUrl(text: string): string {
+  return `https://api.qrserver.com/v1/create-qr-code/?size=180x180&ecc=L&margin=4&data=${encodeURIComponent(text)}`;
+}
 
 export default function App() {
-  const todayStr = getLocalDateString(0);
-  const yesterdayStr = getLocalDateString(-1);
+  const [agency, setAgency] = useState<'Mihintale' | 'Anuradhapura'>('Mihintale');
+  const [docs, setDocs] = useState<UploadedPdfDoc[]>([]);
+  const [printDoc, setPrintDoc] = useState<UploadedPdfDoc | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
-  const getDefaultOrders = (): WholesaleOrder[] => [
-    {
-      id: '26NOV_R187SIN_801',
-      agency: 'Mihintale',
-      shopName: 'Niranjala Stores - R187-000156',
-      category: 'Wholesale',
-      totalAmount: 3300,
-      discountPercentage: 0,
-      netAmount: 3300,
-      date: todayStr,
-      status: 'Dispatched',
-      paymentStatus: 'Unpaid',
-      paidAmount: 0
-    },
-    {
-      id: 'CG0392DSI034516',
-      agency: 'Mihintale',
-      shopName: 'Saliyapura Farm Shop - R187-000143',
-      category: 'Wholesale',
-      totalAmount: 3625,
-      discountPercentage: 0,
-      netAmount: 3625,
-      date: todayStr,
-      status: 'Dispatched',
-      paymentStatus: 'Unpaid',
-      paidAmount: 0
-    },
-    {
-      id: 'CG0392DSI034515',
-      agency: 'Mihintale',
-      shopName: 'Govijana Stores - CUS25722',
-      category: 'Wholesale',
-      totalAmount: 1924.75,
-      discountPercentage: 0,
-      netAmount: 1924.75,
-      date: yesterdayStr,
-      status: 'Dispatched',
-      paymentStatus: 'Partially Paid',
-      paidAmount: 1000
-    },
-    {
-      id: 'ORD-3881',
-      agency: 'Anuradhapura',
-      shopName: 'Anuradhapura Super Stores (Route 1)',
-      category: 'Supermarket',
-      totalAmount: 150000,
-      discountPercentage: 26,
-      netAmount: 111000,
-      date: todayStr,
-      status: 'Pending Approval',
-      paymentStatus: 'Unpaid',
-      paidAmount: 0
-    }
-  ];
-
-  const [activeAgency, setActiveAgency] = useState<'Anuradhapura' | 'Mihintale'>('Mihintale');
-  const [activeTab, setActiveTab] = useState<'pdf' | 'orders' | 'credits' | 'scanner'>('pdf');
-  const [selectedDate, setSelectedDate] = useState<string>('ALL');
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [billToPrint, setBillToPrint] = useState<WholesaleOrder | null>(null);
-
-  const [uploadedBills, setUploadedBills] = useState<UploadedBillItem[]>([]);
-  const [billToPrintModal, setBillToPrintModal] = useState<UploadedBillItem | null>(null);
-  const [selectedPrintPage, setSelectedPrintPage] = useState<number | 'ALL'>('ALL');
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  const [scanningActive, setScanningActive] = useState(false);
-  const [scannedResultText, setScannedResultText] = useState<string>('');
-  const [matchedScannedOrder, setMatchedScannedOrder] = useState<WholesaleOrder | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const scanCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const scanIntervalRef = useRef<number | null>(null);
-
-  const [orders, setOrders] = useState<WholesaleOrder[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load orders from localStorage:', err);
-    }
-    return getDefaultOrders();
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(orders));
-    } catch (err) {
-      console.error('Failed to save orders to localStorage:', err);
-    }
-  }, [orders]);
-
-  useEffect(() => {
-    return () => {
-      if (scanIntervalRef.current) {
-        window.clearInterval(scanIntervalRef.current);
-      }
-    };
-  }, []);
-
-  const [newShop, setNewShop] = useState('');
-  const [newTotal, setNewTotal] = useState('');
-  const [newDiscount, setNewDiscount] = useState('');
-
-  const getQrPayloadFromValues = (
-    invoiceNo: string,
-    agency: 'Anuradhapura' | 'Mihintale',
-    dateStr: string,
-    amount: string | number,
-    status: string,
-    pageNum?: number,
-    shopName?: string
-  ) => {
-    const agencyCode = agency === 'Anuradhapura' ? 'CG0388' : 'CG0392';
-    const cleanInv = (invoiceNo || '').trim() || `BILL-P${pageNum || 1}`;
-    const cleanShop = (shopName || '').trim().slice(0, 28);
-    const pagePart = pageNum ? `P${pageNum}` : 'P1';
-    return `${cleanInv}|${pagePart}|${agencyCode}|${dateStr}|${amount || 0}|${status}|${cleanShop}`;
-  };
-
-  const getQrImageUrlFromPayload = (payload: string, size = 200) => {
-    return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&ecc=L&margin=6&data=${encodeURIComponent(payload)}`;
-  };
-
-  const getQrPayload = (ord: WholesaleOrder) => {
-    return getQrPayloadFromValues(
-      ord.id,
-      ord.agency,
-      ord.date,
-      ord.netAmount,
-      ord.paymentStatus,
-      1,
-      ord.shopName
-    );
-  };
-
-  const getQrImageUrl = (ord: WholesaleOrder) => {
-    return getQrImageUrlFromPayload(getQrPayload(ord), 200);
-  };
-
-  const extractBillDetailsFromPageText = (
-    pageText: string,
-    fallbackInvoice: string,
-    pageNum: number
-  ): { invoiceNo: string; shopName: string; amount: string } => {
-    const compact = pageText.replace(/\s+/g, ' ').trim();
-
-    const invPatterns = [
-      /\b(\d{2}[A-Z]{3}_[A-Z0-9_]+)\b/i,
-      /\b(CG\d{4}[A-Z0-9]+)\b/i,
-      /\b([A-Z]{2,6}\d{2,}[A-Z0-9_/-]*)\b/i
-    ];
-
-    let foundInvoice = '';
-    for (const pat of invPatterns) {
-      const m = compact.match(pat);
-      if (m && m[1]) {
-        const candidate = m[1].toUpperCase();
-        if (!['INVOICE', 'DUPLICATE', 'ORIGINAL', 'MIHINTHALE', 'ANURADHAPURA', 'FREELAN'].includes(candidate)) {
-          foundInvoice = candidate;
-          break;
-        }
-      }
-    }
-
-    const finalInvoice = foundInvoice || `${fallbackInvoice}-P${pageNum}`;
-
-    const shopMatch = compact.match(
-      /Invoiced\s*To\s*:?\s*([A-Za-z0-9\s.&'-]{3,40}?)(?=\s+(?:Tel|Ordered|Invoice|Item|Gross|Total|No\.|\d{7,}))/i
-    );
-    const extractedShop = shopMatch ? shopMatch[1].trim() : '';
-
-    const totalMatch = compact.match(
-      /(?:Total\s*Value|Net\s*Total|Grand\s*Total|Gross\s*Total)\s*:?\s*(?:Rs\.?|LKR)?\s*([\d,]+\.\d{2}|[\d,]+)/i
-    );
-    const extractedAmount = totalMatch ? totalMatch[1].replace(/,/g, '') : '';
-
-    return {
-      invoiceNo: finalInvoice,
-      shopName: extractedShop,
-      amount: extractedAmount
-    };
-  };
-
-  const renderPdfAllPages = async (
-    dataUrl: string,
-    fallbackInvoice: string
-  ): Promise<PdfPageBill[]> => {
-    await loadExternalScript(PDFJS_CDN, 12000);
+  const renderPdfPages = async (dataUrl: string, baseInv: string): Promise<PdfPageItem[]> => {
+    await loadScriptOnce(PDFJS_URL);
     const pdfjsLib = (window as any).pdfjsLib;
-    if (!pdfjsLib) {
-      throw new Error('PDF.js library unavailable');
-    }
-    pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_CDN;
+    if (!pdfjsLib) throw new Error('No pdfjsLib');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = WORKER_URL;
 
-    const base64Part = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
-    const binaryStr = atob(base64Part);
-    const len = binaryStr.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-      bytes[i] = binaryStr.charCodeAt(i);
-    }
+    const base64 = dataUrl.split(',')[1] || '';
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
 
-    const loadingTask = pdfjsLib.getDocument({ data: bytes });
-    const pdfDoc = await loadingTask.promise;
-    const numPages = pdfDoc.numPages || 1;
-    const renderedPages: PdfPageBill[] = [];
+    const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+    const total = pdf.numPages || 1;
+    const out: PdfPageItem[] = [];
 
-    for (let pageNum = 1; pageNum <= numPages; pageNum++) {
-      const page = await pdfDoc.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 1.75 });
+    for (let p = 1; p <= total; p++) {
+      const page = await pdf.getPage(p);
+      const vp = page.getViewport({ scale: 1.5 });
       const canvas = document.createElement('canvas');
-      const context = canvas.getContext('2d');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-
-      if (context) {
-        context.fillStyle = '#ffffff';
-        context.fillRect(0, 0, canvas.width, canvas.height);
-        await page.render({ canvasContext: context, viewport }).promise;
+      canvas.width = vp.width;
+      canvas.height = vp.height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
       }
 
-      let pageText = '';
+      let txt = '';
       try {
-        const textContent = await page.getTextContent();
-        pageText = (textContent.items || [])
-          .map((item: any) => ('str' in item ? item.str : ''))
-          .join(' ');
+        const tc = await page.getTextContent();
+        txt = (tc.items || []).map((it: any) => it.str || '').join(' ');
       } catch {
-        pageText = '';
+        txt = '';
       }
 
-      const extracted = extractBillDetailsFromPageText(pageText, fallbackInvoice, pageNum);
-      renderedPages.push({
-        pageNumber: pageNum,
-        imageUrl: canvas.toDataURL('image/jpeg', 0.88),
-        invoiceNo: extracted.invoiceNo,
-        shopName: extracted.shopName,
-        amount: extracted.amount,
-        paymentStatus: 'Unpaid'
+      const invMatch = txt.match(/\b(\d{2}[A-Z]{3}_[A-Z0-9_]+|CG\d{4}[A-Z0-9]+)\b/i);
+      const amtMatch = txt.match(/(?:Total\s*Value|Net\s*Total|Grand\s*Total)\s*:?\s*(?:Rs\.?|LKR)?\s*([\d,]+\.\d{2}|[\d,]+)/i);
+
+      out.push({
+        pageNumber: p,
+        imageUrl: canvas.toDataURL('image/jpeg', 0.85),
+        invoiceNo: invMatch ? invMatch[1].toUpperCase() : `${baseInv}-P${p}`,
+        amount: amtMatch ? amtMatch[1].replace(/,/g, '') : '',
+        status: 'Unpaid'
       });
     }
-
-    return renderedPages;
+    return out;
   };
 
-  const handleFilesUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const onFilePick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (!files || files.length === 0) return;
+    if (!files || !files.length) return;
 
     Array.from(files).forEach((file, idx) => {
       const reader = new FileReader();
       reader.onload = async () => {
-        const result = typeof reader.result === 'string' ? reader.result : '';
-        if (!result) return;
+        const url = typeof reader.result === 'string' ? reader.result : '';
+        if (!url) return;
 
-        const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-        const cleanedName = file.name.replace(/\.[^/.]+$/, '');
-        const matchInvoice = cleanedName.match(/(?:CG\d{4}[A-Z0-9]+|\d{2}[A-Z]{3}_[A-Z0-9_]+)/i);
-        const baseInvoice = matchInvoice ? matchInvoice[0].toUpperCase() : cleanedName || `BILL-${idx + 1}`;
-        const itemId = `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`;
+        const clean = file.name.replace(/\.[^/.]+$/, '');
+        const invGuess = clean.match(/(?:CG\d{4}[A-Z0-9]+|\d{2}[A-Z]{3}_[A-Z0-9_]+)/i);
+        const baseInv = invGuess ? invGuess[0].toUpperCase() : (clean || `BILL-${idx + 1}`);
+        const id = `${Date.now()}-${idx}`;
 
-        const initialItem: UploadedBillItem = {
-          id: itemId,
+        const item: UploadedPdfDoc = {
+          id,
           fileName: file.name,
-          fileType: isPdf ? 'pdf' : 'image',
-          dataUrl: result,
-          invoiceNo: baseInvoice,
-          shopName: '',
+          dataUrl: url,
+          invoiceNo: baseInv,
           amount: '',
-          paymentStatus: 'Unpaid',
+          status: 'Unpaid',
           pages: [],
-          isRendering: isPdf,
-          renderError: ''
+          loading: true
         };
 
-        setUploadedBills(prev => [initialItem, ...prev]);
+        setDocs(prev => [item, ...prev]);
 
-        if (isPdf) {
-          try {
-            const pages = await renderPdfAllPages(result, baseInvoice);
-            const firstPage = pages[0];
-            setUploadedBills(prev =>
-              prev.map(item =>
-                item.id === itemId
-                  ? {
-                      ...item,
-                      pages,
-                      isRendering: false,
-                      renderError: '',
-                      invoiceNo: firstPage?.invoiceNo || item.invoiceNo,
-                      shopName: firstPage?.shopName || item.shopName,
-                      amount: firstPage?.amount || item.amount
-                    }
-                  : item
-              )
-            );
-          } catch (err: any) {
-            console.error('PDF page render failed:', err);
-            setUploadedBills(prev =>
-              prev.map(item =>
-                item.id === itemId
-                  ? {
-                      ...item,
-                      isRendering: false,
-                      renderError: 'PDF පිටු render කිරීමේදී දෝෂයක් ඇති විය. නැවත උත්සාහ කරන්න.'
-                    }
-                  : item
-              )
-            );
-          }
+        try {
+          const pages = await renderPdfPages(url, baseInv);
+          setDocs(prev =>
+            prev.map(d =>
+              d.id === id
+                ? {
+                    ...d,
+                    pages,
+                    loading: false,
+                    invoiceNo: pages[0]?.invoiceNo || d.invoiceNo,
+                    amount: pages[0]?.amount || d.amount
+                  }
+                : d
+            )
+          );
+        } catch {
+          setDocs(prev =>
+            prev.map(d =>
+              d.id === id
+                ? {
+                    ...d,
+                    loading: false,
+                    note: 'PDF පිටු image ලෙස render කිරීමට නොහැකි විය — Direct PDF Preview & Print භාවිත කරන්න.'
+                  }
+                : d
+            )
+          );
         }
       };
       reader.readAsDataURL(file);
@@ -435,1149 +172,171 @@ export default function App() {
     e.target.value = '';
   };
 
-  const openPrintModalForItem = (item: UploadedBillItem) => {
-    setSelectedPrintPage('ALL');
-    setBillToPrintModal(item);
+  const updateDoc = (id: string, key: 'invoiceNo' | 'amount' | 'status', val: string) => {
+    setDocs(prev => prev.map(d => (d.id === id ? { ...d, [key]: val } : d)));
   };
 
-  const updateUploadedBillField = (
-    id: string,
-    field: 'invoiceNo' | 'shopName' | 'amount' | 'paymentStatus',
-    value: string
-  ) => {
-    setUploadedBills(prev =>
-      prev.map(item => (item.id === id ? { ...item, [field]: value } : item))
-    );
-  };
-
-  const updatePdfPageField = (
-    billId: string,
-    pageNumber: number,
-    field: 'invoiceNo' | 'shopName' | 'amount' | 'paymentStatus',
-    value: string
-  ) => {
-    setUploadedBills(prev =>
-      prev.map(item => {
-        if (item.id !== billId) return item;
-        const updatedPages = item.pages.map(p =>
-          p.pageNumber === pageNumber ? { ...p, [field]: value } : p
-        );
-        return { ...item, pages: updatedPages };
-      })
-    );
-
-    setBillToPrintModal(prev => {
-      if (!prev || prev.id !== billId) return prev;
-      const updatedPages = prev.pages.map(p =>
-        p.pageNumber === pageNumber ? { ...p, [field]: value } : p
-      );
-      return { ...prev, pages: updatedPages };
-    });
-  };
-
-  const savePageOrBillToOrders = (
-    invoiceNo: string,
-    shopName: string,
-    amountStr: string,
-    paymentStatus: 'Unpaid' | 'Partially Paid' | 'Fully Paid',
-    fallbackLabel: string
-  ) => {
-    const parsedAmount = parseFloat(amountStr) || 0;
-    const newOrd: WholesaleOrder = {
-      id: invoiceNo.trim() || `INV-${Date.now().toString().slice(-4)}`,
-      agency: activeAgency,
-      shopName: shopName.trim() || fallbackLabel,
-      category: 'Wholesale',
-      totalAmount: parsedAmount,
-      discountPercentage: 0,
-      netAmount: parsedAmount,
-      date: selectedDate === 'ALL' ? todayStr : selectedDate,
-      status: 'Dispatched',
-      paymentStatus,
-      paidAmount: paymentStatus === 'Fully Paid' ? parsedAmount : 0
-    };
-
-    setOrders(prev => [newOrd, ...prev]);
-    alert(`✅ ${newOrd.id} බිල Orders & Credit Bills ලැයිස්තුවට එක් කරන ලදී.`);
-  };
-
-  const handleSyncFreelan = () => {
-    setIsSyncing(true);
-    setTimeout(() => {
-      setIsSyncing(false);
-      const username = activeAgency === 'Anuradhapura' ? 'CG0388' : 'CG0392';
-      const syncDateLabel = selectedDate === 'ALL' ? todayStr : selectedDate;
-      alert(`✅ Freelan SFA Sync තත්ත්වය:\nAgency: ${activeAgency} (${username})\nදිනය: ${syncDateLabel}\nPDF බිල් Upload කර සෑම පිටුවකටම ඒ බිලේ QR එක සමඟ Print කිරීමට "Upload PDF Bill" භාවිත කරන්න.`);
-    }, 600);
-  };
-
-  const handleResetSampleData = () => {
-    const fresh = getDefaultOrders();
-    setOrders(fresh);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
-    alert('🔄 මූලික බිල් ලැයිස්තුව නැවත සකස් කරන ලදී.');
-  };
-
-  const handleAddOrder = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newShop || !newTotal || !newDiscount) return;
-
-    const total = parseFloat(newTotal);
-    const disc = parseFloat(newDiscount);
-    const net = total - (total * disc) / 100;
-    const orderDate = selectedDate === 'ALL' ? todayStr : selectedDate;
-
-    const order: WholesaleOrder = {
-      id: `ORD-${Date.now().toString().slice(-4)}`,
-      agency: activeAgency,
-      shopName: newShop,
-      category: disc >= 25 ? 'Supermarket' : 'Wholesale',
-      totalAmount: total,
-      discountPercentage: disc,
-      netAmount: net,
-      date: orderDate,
-      status: disc >= 25 ? 'Pending Approval' : 'Dispatched',
-      paymentStatus: 'Unpaid',
-      paidAmount: 0
-    };
-
-    setOrders(prev => [order, ...prev]);
-
-    if (disc >= 25) {
-      alert(`🚨 SMS SENT TO OWNER (+94781980085): High Discount Alert! Shop: ${newShop} requested ${disc}% discount. Net Amount: LKR ${net.toLocaleString()}`);
-    }
-
-    setNewShop('');
-    setNewTotal('');
-    setNewDiscount('');
-  };
-
-  const handleDecodedQrValue = (rawValue: string) => {
-    const trimmed = rawValue.trim();
-    if (!trimmed) return;
-    setScannedResultText(trimmed);
-
-    const parts = trimmed.split('|');
-    const invoiceCandidate = parts[0]?.trim() || trimmed;
-    const pageTag = parts[1]?.trim() || '';
-    const amountFromQr = parseFloat(parts[4] || parts[3] || '0') || 0;
-    const dateFromQr = parts[3]?.match(/^\d{4}-\d{2}-\d{2}$/) ? parts[3] : todayStr;
-    const shopFromQr = parts[6]?.trim() || '';
-
-    const existing = orders.find(
-      o => o.id.toLowerCase() === invoiceCandidate.toLowerCase()
-    );
-
-    if (existing) {
-      setMatchedScannedOrder(existing);
-    } else {
-      const created: WholesaleOrder = {
-        id: invoiceCandidate,
-        agency: parts[2] === 'CG0388' ? 'Anuradhapura' : 'Mihintale',
-        shopName: shopFromQr || `Scanned Bill (${invoiceCandidate}${pageTag ? ` - ${pageTag}` : ''})`,
-        category: 'Wholesale',
-        totalAmount: amountFromQr,
-        discountPercentage: 0,
-        netAmount: amountFromQr,
-        date: dateFromQr,
-        status: 'Dispatched',
-        paymentStatus: 'Unpaid',
-        paidAmount: 0
-      };
-      setOrders(prev => [created, ...prev]);
-      setMatchedScannedOrder(created);
-    }
-  };
-
-  const startCamera = async () => {
-    setScanningActive(true);
-    setScannedResultText('');
-    setMatchedScannedOrder(null);
-
-    try {
-      await loadExternalScript(JSQR_CDN, 8000).catch(() => {});
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        }
-      });
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-
-      const BarcodeDetectorCtor = (window as any).BarcodeDetector;
-      let detector: any = null;
-      if (BarcodeDetectorCtor) {
-        try {
-          detector = new BarcodeDetectorCtor({ formats: ['qr_code'] });
-        } catch {
-          detector = null;
-        }
-      }
-
-      if (scanIntervalRef.current) {
-        window.clearInterval(scanIntervalRef.current);
-      }
-
-      scanIntervalRef.current = window.setInterval(async () => {
-        if (!videoRef.current || videoRef.current.readyState < 2) return;
-
-        if (detector) {
-          try {
-            const barcodes = await detector.detect(videoRef.current);
-            if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
-              handleDecodedQrValue(String(barcodes[0].rawValue));
-              return;
-            }
-          } catch {
-            // fallback to jsQR
-          }
-        }
-
-        const jsQR = (window as any).jsQR;
-        if (jsQR && scanCanvasRef.current) {
-          const canvas = scanCanvasRef.current;
-          const ctx = canvas.getContext('2d');
-          const vw = videoRef.current.videoWidth || 640;
-          const vh = videoRef.current.videoHeight || 480;
-          canvas.width = vw;
-          canvas.height = vh;
-          if (ctx) {
-            ctx.drawImage(videoRef.current, 0, 0, vw, vh);
-            const imgData = ctx.getImageData(0, 0, vw, vh);
-            const code = jsQR(imgData.data, imgData.width, imgData.height, {
-              inversionAttempts: 'attemptBoth'
-            });
-            if (code && code.data) {
-              handleDecodedQrValue(String(code.data));
-            }
-          }
-        }
-      }, 350);
-    } catch (err) {
-      console.error("Camera access error:", err);
-      alert("⚠️ කැමරාව ක්‍රියාත්මක කර ගැනීමට අවසර නැත නැතහොත් කැමරාව භාවිතයේ ඇත.");
-      setScanningActive(false);
-    }
-  };
-
-  const stopCamera = () => {
-    setScanningActive(false);
-    if (scanIntervalRef.current) {
-      window.clearInterval(scanIntervalRef.current);
-      scanIntervalRef.current = null;
-    }
-    if (videoRef.current && videoRef.current.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach(track => track.stop());
-    }
-  };
-
-  const updatePaymentStatus = (id: string, status: 'Unpaid' | 'Partially Paid' | 'Fully Paid', amountPaid: number) => {
-    setOrders(prev => prev.map(ord => {
-      if (ord.id === id) {
-        const updated = { ...ord, paymentStatus: status, paidAmount: amountPaid };
-        if (matchedScannedOrder?.id === id) {
-          setMatchedScannedOrder(updated);
-        }
-        return updated;
-      }
-      return ord;
-    }));
-    alert(`✅ Bill ${id} status updated successfully to: ${status}`);
-  };
-
-  const triggerBrowserPrint = () => {
-    window.print();
-  };
-
-  const filteredOrders = orders.filter(ord => {
-    const matchesAgency = ord.agency === activeAgency;
-    const matchesDate = selectedDate === 'ALL' || ord.date === selectedDate;
-    return matchesAgency && matchesDate;
-  });
-
-  const activeDateForQr = selectedDate === 'ALL' ? todayStr : selectedDate;
-
-  const pagesToRenderInModal = billToPrintModal
-    ? selectedPrintPage === 'ALL'
-      ? billToPrintModal.pages
-      : billToPrintModal.pages.filter(p => p.pageNumber === selectedPrintPage)
-    : [];
+  const code = agency === 'Anuradhapura' ? 'CG0388' : 'CG0392';
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 font-sans p-4 md:p-6">
+    <div className="erp-root">
       <style>{`
-        @page {
-          size: auto;
-          margin: 0mm;
-        }
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f1f5f9; }
+        .erp-root { min-height: 100vh; padding: 16px; }
+        .wrap { max-width: 960px; margin: 0 auto; }
+        .card { background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 16px; margin-bottom: 16px; }
+        .row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
+        .title { margin: 0; font-size: 22px; color: #fbbf24; font-weight: 800; }
+        .sub { margin: 4px 0 0; font-size: 12px; color: #94a3b8; }
+        .btn { background: #f59e0b; color: #0f172a; border: none; border-radius: 8px; padding: 8px 14px; font-weight: 700; font-size: 12px; cursor: pointer; }
+        .btn:hover { background: #fbbf24; }
+        .btn-dark { background: #334155; color: #f8fafc; border: 1px solid #475569; border-radius: 8px; padding: 7px 12px; font-weight: 700; font-size: 12px; cursor: pointer; }
+        .drop { border: 2px dashed #f59e0b; background: #0f172a; border-radius: 12px; padding: 20px; text-align: center; margin-top: 10px; }
+        .doc-box { background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 14px; margin-top: 12px; }
+        .inp { background: #1e293b; color: #f8fafc; border: 1px solid #475569; border-radius: 7px; padding: 7px 10px; font-size: 12px; width: 100%; }
+        .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+        .qr-card { background: #ffffff; color: #0f172a; border-radius: 8px; padding: 6px; text-align: center; width: 96px; flex-shrink: 0; }
+        .qr-card img { width: 84px; height: 84px; display: block; margin: 0 auto; }
+        .qr-lbl { font-size: 9px; font-family: monospace; font-weight: 700; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.85); overflow-y: auto; padding: 16px; z-index: 99; }
+        .modal-box { max-width: 820px; margin: 0 auto; background: #ffffff; color: #0f172a; border-radius: 12px; padding: 16px; }
+        .page-sheet { position: relative; border: 1px solid #cbd5e1; margin-top: 14px; background: #fff; }
+        .page-sheet img, .page-sheet iframe { width: 100%; display: block; border: 0; }
+        .page-sheet iframe { height: 75vh; }
+        .top-right-qr { position: absolute; top: 8px; right: 8px; background: #fff; border: 1.5px solid #000; padding: 4px; z-index: 10; text-align: center; }
+        .top-right-qr img { width: 88px; height: 88px; display: block; }
+        .top-right-qr div { font-size: 9px; font-family: monospace; font-weight: 700; color: #000; }
+        @page { size: auto; margin: 0; }
         @media print {
-          html, body {
-            background: #ffffff !important;
-            color: #000000 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            width: 100% !important;
-            height: auto !important;
-            overflow: visible !important;
-          }
-          .no-print {
-            display: none !important;
-          }
-          .print-modal-backdrop {
-            position: static !important;
-            background: #ffffff !important;
-            padding: 0 !important;
-            margin: 0 !important;
-            display: block !important;
-            overflow: visible !important;
-          }
-          .print-full-page-wrapper {
-            width: 100% !important;
-            max-width: 100% !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            border: none !important;
-            border-radius: 0 !important;
-            box-shadow: none !important;
-            background: #ffffff !important;
-          }
-          .print-page-wrapper {
-            margin: 0 !important;
-            padding: 0 !important;
-          }
-          .print-each-page {
-            position: relative !important;
-            width: 100% !important;
-            max-height: 98.5vh !important;
-            overflow: hidden !important;
-            page-break-inside: avoid !important;
-            break-inside: avoid !important;
-            page-break-after: always !important;
-            break-after: page !important;
-            border: none !important;
-            border-radius: 0 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-          }
-          .print-each-page:last-child {
-            page-break-after: auto !important;
-            break-after: auto !important;
-          }
-          .print-page-img {
-            width: 100% !important;
-            max-height: 98vh !important;
-            height: auto !important;
-            object-fit: contain !important;
-            display: block !important;
-          }
-          .print-top-right-qr {
-            position: absolute !important;
-            top: 6px !important;
-            right: 6px !important;
-            z-index: 50 !important;
-            background: #ffffff !important;
-            border: 1.5px solid #000000 !important;
-            padding: 2px !important;
-          }
+          body { background: #fff !important; color: #000 !important; }
+          .no-print { display: none !important; }
+          .modal-bg { position: static !important; background: #fff !important; padding: 0 !important; }
+          .modal-box { max-width: 100% !important; padding: 0 !important; border-radius: 0 !important; }
+          .page-sheet { border: none !important; margin: 0 !important; page-break-after: always; break-after: page; }
+          .page-sheet:last-child { page-break-after: auto; break-after: auto; }
+          .top-right-qr { position: fixed !important; top: 8px !important; right: 8px !important; }
         }
       `}</style>
 
-      {/* Order Print Modal */}
-      {billToPrint && (
-        <div className="print-modal-backdrop fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
-          <div className="print-full-page-wrapper bg-white text-slate-900 w-full max-w-xl rounded-2xl p-6 shadow-2xl border border-slate-300">
-            <div className="no-print flex justify-between items-center pb-4 mb-4 border-b border-slate-200">
-              <span className="text-sm font-bold text-slate-700">
-                Invoice Preview (Top-Right QR Included)
-              </span>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={triggerBrowserPrint}
-                  className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-1.5 rounded-lg text-xs flex items-center gap-1.5"
-                >
-                  <Printer className="w-4 h-4" /> Print Bill Now
-                </button>
-                <button
-                  onClick={() => setBillToPrint(null)}
-                  className="bg-slate-200 hover:bg-slate-300 text-slate-800 p-1.5 rounded-lg"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
+      <div className="wrap">
+        <div className="card no-print">
+          <div className="row">
+            <div>
+              <h1 className="title">GOLDEN DISTRIBUTORS ERP</h1>
+              <p className="sub">Agency: <b>{agency} ({code})</b> | Owner: Egodagedara Arjunal Nishantha Kumara</p>
             </div>
-
-            <div className="print-each-page flex justify-between items-start gap-4 border-b-2 border-slate-800 pb-4">
-              <div>
-                <h2 className="text-xl font-extrabold text-slate-900 tracking-tight">
-                  GOLDEN DISTRIBUTORS
-                </h2>
-                <p className="text-xs font-semibold text-slate-600 mt-0.5">
-                  Freelan SFA Linked | {billToPrint.agency} ({billToPrint.agency === 'Anuradhapura' ? 'CG0388' : 'CG0392'})
-                </p>
-                <div className="mt-3 text-xs space-y-1 text-slate-800">
-                  <p><span className="font-bold">Bill / Invoice No:</span> <span className="font-mono">{billToPrint.id}</span></p>
-                  <p><span className="font-bold">Date:</span> {billToPrint.date}</p>
-                  <p><span className="font-bold">Customer / Shop:</span> {billToPrint.shopName}</p>
-                </div>
-              </div>
-
-              <div className="print-top-right-qr flex flex-col items-center border border-slate-400 rounded-lg p-2 bg-white shrink-0">
-                <img
-                  src={getQrImageUrl(billToPrint)}
-                  alt={`QR Code for ${billToPrint.id}`}
-                  className="w-24 h-24 object-contain"
-                />
-                <span className="text-[10px] font-mono font-bold text-slate-800 mt-1">
-                  {billToPrint.id}
-                </span>
-              </div>
-            </div>
-
-            <div className="py-4 space-y-2 text-sm border-b border-slate-300">
-              <div className="flex justify-between">
-                <span className="text-slate-600">Gross / Total Amount:</span>
-                <span className="font-semibold">LKR {billToPrint.totalAmount.toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-600">Discount:</span>
-                <span className="font-semibold">{billToPrint.discountPercentage}%</span>
-              </div>
-              <div className="flex justify-between text-base font-extrabold text-slate-950 pt-2 border-t border-dashed border-slate-300">
-                <span>Net Payable Amount:</span>
-                <span>LKR {billToPrint.netAmount.toLocaleString()}</span>
-              </div>
-            </div>
-
-            <div className="pt-3 flex justify-between items-center text-xs text-slate-700">
-              <span>Status: <strong>{billToPrint.paymentStatus}</strong></span>
-              <span className="font-mono text-[11px] text-slate-500">
-                {getQrPayload(billToPrint)}
-              </span>
+            <div className="row">
+              <button className={agency === 'Mihintale' ? 'btn' : 'btn-dark'} onClick={() => setAgency('Mihintale')}>
+                Mihintale (CG0392)
+              </button>
+              <button className={agency === 'Anuradhapura' ? 'btn' : 'btn-dark'} onClick={() => setAgency('Anuradhapura')}>
+                Anuradhapura (CG0388)
+              </button>
             </div>
           </div>
         </div>
-      )}
 
-      {/* Multi-Page PDF Print Modal */}
-      {billToPrintModal && (
-        <div className="print-modal-backdrop fixed inset-0 z-50 bg-black/85 overflow-y-auto p-4">
-          <div className="print-full-page-wrapper max-w-4xl mx-auto bg-white text-slate-900 rounded-2xl p-4 md:p-6 shadow-2xl space-y-6">
-            <div className="no-print flex flex-wrap justify-between items-center gap-3 pb-4 border-b border-slate-200">
-              <div>
-                <span className="text-sm font-bold text-slate-800 block">
-                  {billToPrintModal.fileName} ({billToPrintModal.pages.length > 0 ? `${billToPrintModal.pages.length} Pages` : 'Single View'})
-                </span>
-                <span className="text-xs text-slate-600">
-                  සෑම පිටුවකම ඉහළ දකුණු පැත්තේ ඒ බිලට අදාළ QR කෝඩ් එක සකසා ඇත.
-                </span>
+        <div className="card no-print">
+          <h2 style={{ margin: 0, fontSize: 16, color: '#fbbf24' }}>PDF Bill Upload & Top-Right QR Print</h2>
+          <div className="drop">
+            <p style={{ margin: '0 0 10px', fontSize: 13 }}>PDF බිල් ෆයිලය තෝරන්න:</p>
+            <input ref={fileRef} type="file" accept=".pdf,application/pdf" multiple onChange={onFilePick} />
+          </div>
+
+          {docs.map(d => {
+            const payload = `${d.invoiceNo}|${code}|${d.amount || 0}|${d.status}`;
+            return (
+              <div key={d.id} className="doc-box">
+                <div className="row" style={{ alignItems: 'flex-start' }}>
+                  <div style={{ flex: 1, minWidth: 220 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: '#34d399' }}>
+                      {d.fileName} {d.loading ? '(Rendering...)' : d.pages.length ? `(${d.pages.length} Pages)` : ''}
+                    </div>
+                    {d.note && <div style={{ fontSize: 11, color: '#fbbf24', marginTop: 4 }}>{d.note}</div>}
+                    <div className="grid2">
+                      <input
+                        className="inp"
+                        value={d.invoiceNo}
+                        onChange={e => updateDoc(d.id, 'invoiceNo', e.target.value)}
+                        placeholder="Invoice No"
+                      />
+                      <input
+                        className="inp"
+                        value={d.amount}
+                        onChange={e => updateDoc(d.id, 'amount', e.target.value)}
+                        placeholder="Amount (LKR)"
+                      />
+                    </div>
+                    <div style={{ marginTop: 8 }}>
+                      <select
+                        className="inp"
+                        value={d.status}
+                        onChange={e => updateDoc(d.id, 'status', e.target.value)}
+                      >
+                        <option value="Unpaid">Unpaid</option>
+                        <option value="Half">Half</option>
+                        <option value="Paid">Paid</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="qr-card">
+                    <img src={makeQrUrl(payload)} alt={d.invoiceNo} />
+                    <div className="qr-lbl">{d.invoiceNo}</div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                  <button className="btn" onClick={() => setPrintDoc(d)}>
+                    Preview & Print ({d.pages.length || 1})
+                  </button>
+                </div>
               </div>
+            );
+          })}
+        </div>
+      </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                {billToPrintModal.pages.length > 0 && (
-                  <select
-                    value={selectedPrintPage}
-                    onChange={(e) =>
-                      setSelectedPrintPage(e.target.value === 'ALL' ? 'ALL' : Number(e.target.value))
-                    }
-                    className="bg-slate-100 border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-800"
-                  >
-                    <option value="ALL">All Pages ({billToPrintModal.pages.length})</option>
-                    {billToPrintModal.pages.map(p => (
-                      <option key={p.pageNumber} value={p.pageNumber}>
-                        Page {p.pageNumber} ({p.invoiceNo})
-                      </option>
-                    ))}
-                  </select>
-                )}
-
-                <button
-                  onClick={triggerBrowserPrint}
-                  className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-1.5 rounded-lg text-xs flex items-center gap-1.5"
-                >
-                  <Printer className="w-4 h-4" /> Print Now
-                </button>
-                <button
-                  onClick={() => setBillToPrintModal(null)}
-                  className="bg-slate-200 hover:bg-slate-300 text-slate-800 p-1.5 rounded-lg"
-                >
-                  <X className="w-4 h-4" />
-                </button>
+      {printDoc && (
+        <div className="modal-bg">
+          <div className="modal-box">
+            <div className="row no-print" style={{ paddingBottom: 10, borderBottom: '1px solid #e2e8f0' }}>
+              <strong style={{ fontSize: 14 }}>{printDoc.fileName}</strong>
+              <div className="row">
+                <button className="btn" onClick={() => window.print()}>Print Now</button>
+                <button className="btn-dark" onClick={() => setPrintDoc(null)}>Close</button>
               </div>
             </div>
 
-            {pagesToRenderInModal.length > 0 ? (
-              pagesToRenderInModal.map(pg => {
-                const pagePayload = getQrPayloadFromValues(
-                  pg.invoiceNo,
-                  activeAgency,
-                  activeDateForQr,
-                  pg.amount || '0',
-                  pg.paymentStatus,
-                  pg.pageNumber,
-                  pg.shopName
-                );
+            {printDoc.pages.length > 0 ? (
+              printDoc.pages.map(pg => {
+                const pPayload = `${pg.invoiceNo}|P${pg.pageNumber}|${code}|${pg.amount || printDoc.amount || 0}|${pg.status}`;
                 return (
-                  <div key={pg.pageNumber} className="print-page-wrapper space-y-2">
-                    <div className="no-print flex flex-wrap items-center gap-2 bg-slate-100 p-2.5 rounded-lg border border-slate-300 text-xs">
-                      <span className="font-bold text-slate-800">Page {pg.pageNumber}:</span>
-                      <input
-                        type="text"
-                        value={pg.invoiceNo}
-                        onChange={(e) =>
-                          updatePdfPageField(billToPrintModal.id, pg.pageNumber, 'invoiceNo', e.target.value)
-                        }
-                        placeholder="Invoice No"
-                        className="bg-white border border-slate-400 rounded px-2 py-1 font-mono text-xs text-slate-900"
-                      />
-                      <input
-                        type="text"
-                        value={pg.amount}
-                        onChange={(e) =>
-                          updatePdfPageField(billToPrintModal.id, pg.pageNumber, 'amount', e.target.value)
-                        }
-                        placeholder="Amount"
-                        className="w-24 bg-white border border-slate-400 rounded px-2 py-1 text-xs text-slate-900"
-                      />
-                      <select
-                        value={pg.paymentStatus}
-                        onChange={(e) =>
-                          updatePdfPageField(billToPrintModal.id, pg.pageNumber, 'paymentStatus', e.target.value)
-                        }
-                        className="bg-white border border-slate-400 rounded px-2 py-1 text-xs text-slate-900"
-                      >
-                        <option value="Unpaid">Unpaid</option>
-                        <option value="Partially Paid">Partially Paid</option>
-                        <option value="Fully Paid">Fully Paid</option>
-                      </select>
+                  <div key={pg.pageNumber} className="page-sheet">
+                    <div className="top-right-qr">
+                      <img src={makeQrUrl(pPayload)} alt={pg.invoiceNo} />
+                      <div>{pg.invoiceNo}</div>
                     </div>
-
-                    <div className="print-each-page relative border border-slate-300 rounded-lg overflow-hidden bg-white">
-                      <div className="print-top-right-qr absolute top-2 right-2 z-20 bg-white border border-slate-900 rounded-md p-1 shadow flex flex-col items-center">
-                        <img
-                          src={getQrImageUrlFromPayload(pagePayload, 200)}
-                          alt={`QR Page ${pg.pageNumber} - ${pg.invoiceNo}`}
-                          className="w-24 h-24 object-contain"
-                        />
-                        <span className="text-[9px] font-mono font-bold text-slate-900 mt-0.5 max-w-[105px] truncate">
-                          {pg.invoiceNo}
-                        </span>
-                      </div>
-
-                      <img
-                        src={pg.imageUrl}
-                        alt={`${billToPrintModal.fileName} - Page ${pg.pageNumber}`}
-                        className="print-page-img w-full h-auto block"
-                      />
-                    </div>
+                    <img src={pg.imageUrl} alt={`Page ${pg.pageNumber}`} />
                   </div>
                 );
               })
             ) : (
-              <div className="print-page-wrapper">
-                <div className="print-each-page relative border border-slate-300 rounded-lg overflow-hidden bg-white">
-                  <div className="print-top-right-qr absolute top-2 right-2 z-20 bg-white border border-slate-900 rounded-md p-1 shadow flex flex-col items-center">
-                    <img
-                      src={getQrImageUrlFromPayload(
-                        getQrPayloadFromValues(
-                          billToPrintModal.invoiceNo,
-                          activeAgency,
-                          activeDateForQr,
-                          billToPrintModal.amount || '0',
-                          billToPrintModal.paymentStatus,
-                          1,
-                          billToPrintModal.shopName
-                        ),
-                        200
-                      )}
-                      alt={`QR ${billToPrintModal.invoiceNo}`}
-                      className="w-24 h-24 object-contain"
-                    />
-                    <span className="text-[9px] font-mono font-bold text-slate-900 mt-0.5">
-                      {billToPrintModal.invoiceNo}
-                    </span>
-                  </div>
-
-                  {billToPrintModal.fileType === 'pdf' ? (
-                    <iframe
-                      src={billToPrintModal.dataUrl}
-                      title={billToPrintModal.fileName}
-                      className="print-page-img w-full h-[80vh] border-0"
-                    />
-                  ) : (
-                    <img
-                      src={billToPrintModal.dataUrl}
-                      alt={billToPrintModal.fileName}
-                      className="print-page-img w-full h-auto block"
-                    />
-                  )}
+              <div className="page-sheet">
+                <div className="top-right-qr">
+                  <img
+                    src={makeQrUrl(`${printDoc.invoiceNo}|${code}|${printDoc.amount || 0}|${printDoc.status}`)}
+                    alt={printDoc.invoiceNo}
+                  />
+                  <div>{printDoc.invoiceNo}</div>
                 </div>
+                <iframe src={printDoc.dataUrl} title={printDoc.fileName} />
               </div>
             )}
           </div>
         </div>
       )}
-
-      {/* Main ERP Interface */}
-      <div className="no-print">
-        <header className="max-w-6xl mx-auto bg-slate-800 border border-slate-700 rounded-2xl p-4 md:p-6 mb-6 shadow-xl flex flex-col md:flex-row justify-between items-center gap-4">
-          <div>
-            <h1 className="text-2xl md:text-3xl font-extrabold text-amber-400 tracking-wide flex items-center gap-2">
-              🟡 GOLDEN DISTRIBUTORS ERP
-            </h1>
-            <p className="text-slate-400 text-sm mt-1">
-              Anuradhapura & Mihintale 12-Route Distribution Management System
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-700">
-            <span className="text-xs text-slate-400 px-2 font-medium">Agency:</span>
-            {(['Anuradhapura', 'Mihintale'] as const).map((ag) => (
-              <button
-                key={ag}
-                onClick={() => setActiveAgency(ag)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                  activeAgency === ag
-                    ? 'bg-amber-500 text-slate-950 shadow-md'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                {ag} ({ag === 'Anuradhapura' ? 'CG0388' : 'CG0392'})
-              </button>
-            ))}
-          </div>
-        </header>
-
-        {/* Date Filter Bar */}
-        <div className="max-w-6xl mx-auto bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4 flex flex-col sm:flex-row justify-between items-center gap-3 shadow-md">
-          <div className="flex items-center gap-2">
-            <CalendarIcon className="w-5 h-5 text-amber-400" />
-            <span className="text-sm font-bold text-white">දිනය තෝරන්න (Date Filter):</span>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => setSelectedDate('ALL')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                selectedDate === 'ALL' ? 'bg-amber-500 text-slate-950' : 'bg-slate-900 text-slate-300 border border-slate-700'
-              }`}
-            >
-              සියලුම දින (All)
-            </button>
-            <button
-              onClick={() => setSelectedDate(todayStr)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                selectedDate === todayStr ? 'bg-amber-500 text-slate-950' : 'bg-slate-900 text-slate-300 border border-slate-700'
-              }`}
-            >
-              අද (Today)
-            </button>
-            <button
-              onClick={() => setSelectedDate(yesterdayStr)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                selectedDate === yesterdayStr ? 'bg-amber-500 text-slate-950' : 'bg-slate-900 text-slate-300 border border-slate-700'
-              }`}
-            >
-              ඊයේ (Yesterday)
-            </button>
-            <input
-              type="date"
-              value={selectedDate === 'ALL' ? '' : selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value || 'ALL')}
-              className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-amber-400 focus:outline-none focus:border-amber-400"
-            />
-          </div>
-        </div>
-
-        {/* Sync Bar */}
-        <div className="max-w-6xl mx-auto bg-slate-800 border border-slate-700 rounded-xl p-4 mb-6 flex flex-col sm:flex-row justify-between items-center gap-3 shadow-md">
-          <div>
-            <p className="text-sm font-bold text-white flex items-center gap-2">
-              🔗 Freelan SFA Integration ({activeAgency})
-            </p>
-            <p className="text-xs text-slate-400">
-              Username: <span className="text-amber-400 font-mono">{activeAgency === 'Anuradhapura' ? 'CG0388' : 'CG0392'}</span> | Date: <span className="text-emerald-400">{selectedDate === 'ALL' ? 'All Dates' : selectedDate}</span>
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleResetSampleData}
-              className="bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold px-3 py-2 rounded-lg text-xs flex items-center gap-1.5 transition-all"
-            >
-              <RotateCcw className="w-3.5 h-3.5" /> Reset
-            </button>
-            <button
-              onClick={handleSyncFreelan}
-              disabled={isSyncing}
-              className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-lg text-xs flex items-center gap-2 transition-all shadow"
-            >
-              <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
-              {isSyncing ? 'Syncing...' : `Sync ${activeAgency}`}
-            </button>
-          </div>
-        </div>
-
-        {/* Navigation Tabs */}
-        <div className="max-w-6xl mx-auto flex gap-3 mb-6 overflow-x-auto pb-2">
-          <button
-            onClick={() => { stopCamera(); setActiveTab('pdf'); }}
-            className={`px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all ${
-              activeTab === 'pdf' ? 'bg-amber-500 text-slate-950 shadow-lg' : 'bg-slate-800 text-slate-300 border border-slate-700'
-            }`}
-          >
-            <FileUp className="w-4 h-4" /> Upload PDF Bill ({uploadedBills.length})
-          </button>
-          <button
-            onClick={() => { stopCamera(); setActiveTab('orders'); }}
-            className={`px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all ${
-              activeTab === 'orders' ? 'bg-amber-500 text-slate-950 shadow-lg' : 'bg-slate-800 text-slate-300 border border-slate-700'
-            }`}
-          >
-            <Wallet className="w-4 h-4" /> Orders & QR Invoices ({filteredOrders.length})
-          </button>
-          <button
-            onClick={() => { stopCamera(); setActiveTab('credits'); }}
-            className={`px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all ${
-              activeTab === 'credits' ? 'bg-amber-500 text-slate-950 shadow-lg' : 'bg-slate-800 text-slate-300 border border-slate-700'
-            }`}
-          >
-            <Clock className="w-4 h-4" /> Credit Bills Manager
-          </button>
-          <button
-            onClick={() => setActiveTab('scanner')}
-            className={`px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all ${
-              activeTab === 'scanner' ? 'bg-amber-500 text-slate-950 shadow-lg' : 'bg-slate-800 text-slate-300 border border-slate-700'
-            }`}
-          >
-            <Scan className="w-4 h-4" /> Live Camera QR Scanner
-          </button>
-        </div>
-
-        <main className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="md:col-span-2 space-y-6">
-
-            {/* Upload PDF Bill Tab */}
-            {activeTab === 'pdf' && (
-              <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg space-y-5">
-                <div>
-                  <h2 className="text-lg font-bold text-amber-400 flex items-center gap-2">
-                    <FileUp className="w-5 h-5" /> Multi-Page PDF Bill Upload & Per-Bill Top-Right QR
-                  </h2>
-                  <p className="text-xs text-slate-400 mt-1">
-                    PDF එකේ සෑම පිටුවකම ඉහළ දකුණු පැත්තේ ඒ බිලට අදාළ QR කෝඩ් එක සකසා print කරන්න.
-                  </p>
-                </div>
-
-                <div className="bg-slate-900/90 border border-amber-500/40 rounded-xl p-3.5 text-xs text-slate-300 space-y-1">
-                  <p className="font-bold text-amber-400 flex items-center gap-1.5">
-                    <Mail className="w-4 h-4" /> ඊමේල් එකේ PDF බිල මෙතැනට ගන්නා කෙටි මඟ:
-                  </p>
-                  <p>1. ඊමේල් එකේ PDF බිල ළඟ ඇති <strong>Download</strong> බොත්තම ඔබා PC එකේ Downloads වෙත ගන්න.</p>
-                  <p>2. පහත <strong>Choose PDF File</strong> ඔබා ඒ PDF එක තෝරන්න — සෑම පිටුවකම විස්තර auto-extract වී වෙන වෙනම QR හැදේ.</p>
-                </div>
-
-                <div className="bg-slate-900/70 border-2 border-dashed border-amber-500/70 rounded-xl p-5 text-center space-y-3">
-                  <FileText className="w-10 h-10 text-amber-400 mx-auto" />
-                  <p className="text-sm font-bold text-white">
-                    PDF බිල් ෆයිල් තෝරා Upload කරන්න
-                  </p>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".pdf,application/pdf"
-                    multiple
-                    onChange={handleFilesUpload}
-                    className="block w-full text-xs text-slate-300 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-amber-500 file:text-slate-950 hover:file:bg-amber-400 cursor-pointer"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-lg text-xs inline-flex items-center gap-1.5"
-                  >
-                    <FileUp className="w-4 h-4" /> Choose PDF File
-                  </button>
-                </div>
-
-                {uploadedBills.length > 0 && (
-                  <div className="space-y-4">
-                    {uploadedBills.map(item => {
-                      const samplePage = item.pages[0];
-                      const previewInvoice = samplePage ? samplePage.invoiceNo : item.invoiceNo;
-                      const previewAmount = samplePage ? samplePage.amount : item.amount;
-                      const previewStatus = samplePage ? samplePage.paymentStatus : item.paymentStatus;
-                      const payload = getQrPayloadFromValues(
-                        previewInvoice,
-                        activeAgency,
-                        activeDateForQr,
-                        previewAmount || '0',
-                        previewStatus,
-                        samplePage?.pageNumber || 1,
-                        samplePage?.shopName || item.shopName
-                      );
-
-                      return (
-                        <div
-                          key={item.id}
-                          className="bg-slate-900 border border-slate-700 rounded-xl p-4 space-y-3"
-                        >
-                          <div className="flex justify-between items-start gap-3">
-                            <div className="flex-1 space-y-2">
-                              <div className="text-xs font-bold text-emerald-400 break-all flex flex-wrap items-center gap-2">
-                                <span>{item.fileName}</span>
-                                {item.isRendering && (
-                                  <span className="text-amber-400 inline-flex items-center gap-1">
-                                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> Rendering pages...
-                                  </span>
-                                )}
-                                {!item.isRendering && item.pages.length > 0 && (
-                                  <span className="bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded text-[11px]">
-                                    {item.pages.length} Pages Ready
-                                  </span>
-                                )}
-                              </div>
-
-                              {item.renderError && (
-                                <p className="text-xs text-amber-300 flex items-center gap-1">
-                                  <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {item.renderError}
-                                </p>
-                              )}
-
-                              <input
-                                type="text"
-                                placeholder="Invoice No (e.g. 26NOV_R187SIN_801)"
-                                value={item.invoiceNo}
-                                onChange={(e) => updateUploadedBillField(item.id, 'invoiceNo', e.target.value)}
-                                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white"
-                              />
-                              <input
-                                type="text"
-                                placeholder="Shop Name (Optional)"
-                                value={item.shopName}
-                                onChange={(e) => updateUploadedBillField(item.id, 'shopName', e.target.value)}
-                                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
-                              />
-                              <div className="grid grid-cols-2 gap-2">
-                                <input
-                                  type="number"
-                                  placeholder="Amount (LKR)"
-                                  value={item.amount}
-                                  onChange={(e) => updateUploadedBillField(item.id, 'amount', e.target.value)}
-                                  className="bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
-                                />
-                                <select
-                                  value={item.paymentStatus}
-                                  onChange={(e) => updateUploadedBillField(item.id, 'paymentStatus', e.target.value)}
-                                  className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white"
-                                >
-                                  <option value="Unpaid">Unpaid</option>
-                                  <option value="Partially Paid">Partially Paid</option>
-                                  <option value="Fully Paid">Fully Paid</option>
-                                </select>
-                              </div>
-                            </div>
-
-                            <div className="bg-white p-1.5 rounded-lg border border-slate-400 flex flex-col items-center shrink-0">
-                              <img
-                                src={getQrImageUrlFromPayload(payload, 200)}
-                                alt={`QR ${previewInvoice}`}
-                                className="w-20 h-20 object-contain"
-                              />
-                              <span className="text-[9px] font-mono font-bold text-slate-900 mt-0.5 max-w-[82px] truncate">
-                                {previewInvoice}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
-                            <button
-                              onClick={() =>
-                                savePageOrBillToOrders(
-                                  item.invoiceNo,
-                                  item.shopName,
-                                  item.amount,
-                                  item.paymentStatus,
-                                  item.fileName
-                                )
-                              }
-                              className="bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold px-3 py-1.5 rounded-lg text-xs"
-                            >
-                              Save to Credit List
-                            </button>
-                            <button
-                              onClick={() => openPrintModalForItem(item)}
-                              disabled={item.isRendering}
-                              className="bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold px-3.5 py-1.5 rounded-lg text-xs flex items-center gap-1"
-                            >
-                              <Printer className="w-3.5 h-3.5" /> Preview & Print All ({item.pages.length || 1})
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Orders & QR Invoices Tab */}
-            {activeTab === 'orders' && (
-              <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg">
-                <h2 className="text-lg font-bold text-amber-400 mb-4 flex items-center gap-2">
-                  <Wallet className="w-5 h-5" /> {activeAgency} Orders & QR Invoices
-                </h2>
-
-                <form onSubmit={handleAddOrder} className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6 bg-slate-900/50 p-4 rounded-xl border border-slate-700/50">
-                  <input
-                    type="text"
-                    placeholder="Shop Name"
-                    value={newShop}
-                    onChange={(e) => setNewShop(e.target.value)}
-                    className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-400"
-                  />
-                  <input
-                    type="number"
-                    placeholder="Total Amount (LKR)"
-                    value={newTotal}
-                    onChange={(e) => setNewTotal(e.target.value)}
-                    className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-400"
-                  />
-                  <input
-                    type="number"
-                    placeholder="Discount %"
-                    value={newDiscount}
-                    onChange={(e) => setNewDiscount(e.target.value)}
-                    className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-400"
-                  />
-                  <button
-                    type="submit"
-                    className="sm:col-span-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-2.5 rounded-lg text-sm transition-all shadow-md"
-                  >
-                    Create Order & Generate QR Invoice
-                  </button>
-                </form>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead className="bg-slate-900 text-slate-400 border-b border-slate-700">
-                      <tr>
-                        <th className="p-3">Invoice / Date</th>
-                        <th className="p-3">Shop Name</th>
-                        <th className="p-3">Net Amount</th>
-                        <th className="p-3">Status</th>
-                        <th className="p-3">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-700">
-                      {filteredOrders.length === 0 ? (
-                        <tr>
-                          <td colSpan={5} className="p-6 text-center text-slate-400 text-xs">
-                            තෝරාගත් දිනයට අදාළ බිල්පත් කිසිවක් හමු නොවීය.
-                          </td>
-                        </tr>
-                      ) : (
-                        filteredOrders.map((ord) => (
-                          <tr key={ord.id} className="hover:bg-slate-900/30">
-                            <td className="p-3">
-                              <div className="font-mono text-xs text-amber-400 flex items-center gap-1">
-                                <QrCode className="w-4 h-4 text-amber-400" /> {ord.id}
-                              </div>
-                              <div className="text-[11px] text-slate-400 mt-0.5">{ord.date}</div>
-                            </td>
-                            <td className="p-3 font-medium">{ord.shopName}</td>
-                            <td className="p-3 font-semibold">LKR {ord.netAmount.toLocaleString()}</td>
-                            <td className="p-3">
-                              <span className={`text-xs px-2.5 py-1 rounded-full font-bold ${
-                                ord.paymentStatus === 'Fully Paid' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' :
-                                ord.paymentStatus === 'Partially Paid' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30' :
-                                'bg-rose-500/10 text-rose-400 border border-rose-500/30'
-                              }`}>
-                                {ord.paymentStatus}
-                              </span>
-                            </td>
-                            <td className="p-3">
-                              <button
-                                onClick={() => setBillToPrint(ord)}
-                                className="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-xs font-bold text-amber-300"
-                              >
-                                Print QR Bill
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {/* Credit Bills Manager Tab */}
-            {activeTab === 'credits' && (
-              <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg">
-                <h2 className="text-lg font-bold text-amber-400 mb-4 flex items-center gap-2">
-                  <Clock className="w-5 h-5" /> {activeAgency} Credit Bill Manager
-                </h2>
-
-                <div className="space-y-3">
-                  {filteredOrders.map(ord => (
-                    <div key={ord.id} className="bg-slate-900 p-4 rounded-xl border border-slate-700 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-                      <div>
-                        <p className="font-bold text-white text-sm">{ord.shopName} <span className="text-xs text-amber-400 font-mono">({ord.id})</span></p>
-                        <p className="text-xs text-slate-400 mt-1">Date: {ord.date} | Net: LKR {ord.netAmount.toLocaleString()} | Paid: LKR {ord.paidAmount.toLocaleString()}</p>
-                      </div>
-                      <span className={`text-xs px-3 py-1 rounded-full font-bold ${
-                        ord.paymentStatus === 'Fully Paid' ? 'bg-emerald-500/20 text-emerald-400' :
-                        ord.paymentStatus === 'Partially Paid' ? 'bg-amber-500/20 text-amber-400' :
-                        'bg-rose-500/20 text-rose-400'
-                      }`}>
-                        {ord.paymentStatus}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Live Camera QR Scanner Tab */}
-            {activeTab === 'scanner' && (
-              <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg text-center py-8">
-                <Camera className="w-16 h-16 text-amber-400 mx-auto mb-4" />
-                <h2 className="text-xl font-bold text-amber-400 mb-2">Live Camera QR Bill Scanner</h2>
-                <p className="text-sm text-slate-300 max-w-md mx-auto mb-6">
-                  බිල්වල ඉහළ දකුණු පැත්තේ තියෙන QR කෝඩ් එක ස්කෑන් කර ඒ බිලේ විස්තර බලා Paid / Half / Unpaid කරන්න.
-                </p>
-
-                {!scanningActive ? (
-                  <button
-                    onClick={startCamera}
-                    className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-6 py-3 rounded-xl shadow-lg transition-all flex items-center gap-2 mx-auto"
-                  >
-                    <Scan className="w-5 h-5" /> Turn On Camera Scanner
-                  </button>
-                ) : (
-                  <div className="space-y-4">
-                    <div className="relative w-full max-w-sm mx-auto bg-black rounded-xl overflow-hidden border-2 border-amber-400 aspect-[3/4]">
-                      <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-                      <canvas ref={scanCanvasRef} className="hidden" />
-                      <div className="absolute inset-0 border-4 border-amber-400/30 flex items-center justify-center pointer-events-none">
-                        <div className="w-48 h-48 border-2 border-dashed border-amber-400 rounded-lg animate-pulse"></div>
-                      </div>
-                    </div>
-                    <button
-                      onClick={stopCamera}
-                      className="bg-rose-600 hover:bg-rose-500 text-white font-bold px-6 py-2 rounded-xl text-sm transition-all"
-                    >
-                      Turn Off Camera
-                    </button>
-                  </div>
-                )}
-
-                {scannedResultText && (
-                  <div className="mt-6 max-w-md mx-auto bg-emerald-950/60 border border-emerald-500/40 rounded-xl p-4 text-left space-y-2">
-                    <p className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
-                      <CheckCircle2 className="w-4 h-4" /> QR Scanned Successfully!
-                    </p>
-                    <p className="text-xs font-mono text-white break-all">{scannedResultText}</p>
-                    {matchedScannedOrder && (
-                      <div className="pt-2 border-t border-emerald-500/20 flex flex-wrap justify-between items-center gap-2">
-                        <div>
-                          <p className="text-xs font-bold text-amber-300">{matchedScannedOrder.id}</p>
-                          <p className="text-xs text-slate-300">
-                            {matchedScannedOrder.shopName} — LKR {matchedScannedOrder.netAmount.toLocaleString()} ({matchedScannedOrder.paymentStatus})
-                          </p>
-                        </div>
-                        <div className="flex gap-1">
-                          <button
-                            onClick={() => updatePaymentStatus(matchedScannedOrder.id, 'Fully Paid', matchedScannedOrder.netAmount)}
-                            className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-2.5 py-1 rounded font-bold"
-                          >
-                            Paid
-                          </button>
-                          <button
-                            onClick={() => updatePaymentStatus(matchedScannedOrder.id, 'Partially Paid', matchedScannedOrder.netAmount / 2)}
-                            className="bg-amber-600 hover:bg-amber-500 text-slate-950 text-xs px-2.5 py-1 rounded font-bold"
-                          >
-                            Half
-                          </button>
-                          <button
-                            onClick={() => updatePaymentStatus(matchedScannedOrder.id, 'Unpaid', 0)}
-                            className="bg-rose-600 hover:bg-rose-500 text-white text-xs px-2.5 py-1 rounded font-bold"
-                          >
-                            Unpaid
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                <div className="mt-8 max-w-md mx-auto bg-slate-900 p-4 rounded-xl border border-slate-700 text-left space-y-3">
-                  <p className="text-xs font-bold text-slate-400">Quick Bill Status Actions ({activeAgency}):</p>
-                  {filteredOrders.map(ord => (
-                    <div key={ord.id} className="flex justify-between items-center bg-slate-800 p-3 rounded-lg">
-                      <div>
-                        <span className="text-xs font-mono text-amber-400 block">{ord.id} ({ord.date})</span>
-                        <span className="text-xs text-slate-300">{ord.shopName}</span>
-                      </div>
-                      <div className="flex gap-1">
-                        <button
-                          onClick={() => updatePaymentStatus(ord.id, 'Fully Paid', ord.netAmount)}
-                          className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-2 py-1 rounded font-bold"
-                        >
-                          Paid
-                        </button>
-                        <button
-                          onClick={() => updatePaymentStatus(ord.id, 'Partially Paid', ord.netAmount / 2)}
-                          className="bg-amber-600 hover:bg-amber-500 text-slate-950 text-xs px-2 py-1 rounded font-bold"
-                        >
-                          Half
-                        </button>
-                        <button
-                          onClick={() => updatePaymentStatus(ord.id, 'Unpaid', 0)}
-                          className="bg-rose-600 hover:bg-rose-500 text-white text-xs px-2 py-1 rounded font-bold"
-                        >
-                          Unpaid
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Sidebar Info */}
-          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg flex flex-col justify-between">
-            <div>
-              <h2 className="text-lg font-bold text-amber-400 mb-3 flex items-center gap-2">
-                <Fuel className="w-5 h-5" /> Operations Info
-              </h2>
-              <p className="text-sm text-slate-300 mb-2">
-                Active Agency: <span className="font-bold text-amber-400">{activeAgency}</span>
-              </p>
-              <p className="text-xs text-slate-400 mb-4 font-mono">
-                User: {activeAgency === 'Anuradhapura' ? 'CG0388' : 'CG0392'}
-              </p>
-              <div className="bg-slate-900 p-4 rounded-xl border border-slate-700 mb-4">
-                <p className="text-xs text-slate-400">Business Owner</p>
-                <p className="text-sm font-bold text-white mt-0.5">Egodagedara Arjunal Nishantha Kumara</p>
-                <p className="text-xs text-amber-400 mt-2">SMS Alert Mobile: +94 78 198 0085</p>
-              </div>
-            </div>
-
-            <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-700 text-center">
-              <p className="text-xs text-slate-400">Fresh v5 Build • Per-Page QR</p>
-              <p className="text-xs text-emerald-400 font-semibold mt-1">● Active & Ready</p>
-            </div>
-          </div>
-        </main>
-      </div>
     </div>
   );
 }
