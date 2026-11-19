@@ -123,8 +123,8 @@ function parseScannedQrText(raw: string, fallbackAgencyCode: string): ScannedBil
 async function makeRealQrDataUrl(payload: string): Promise<string> {
   try {
     return await QRCode.toDataURL(payload, {
-      width: 180,
-      margin: 2,
+      width: 220,
+      margin: 3,
       errorCorrectionLevel: 'M',
       color: {
         dark: '#000000',
@@ -203,7 +203,6 @@ export default function App() {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const qrImgInputRef = useRef<HTMLInputElement | null>(null);
 
-  // System QR Scanner state
   const [cameraOn, setCameraOn] = useState(false);
   const [scanError, setScanError] = useState('');
   const [scannedBill, setScannedBill] = useState<ScannedBillRecord | null>(null);
@@ -609,8 +608,8 @@ export default function App() {
         .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
         .grid2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
         @media (max-width: 640px) { .grid3, .grid2 { grid-template-columns: 1fr; } }
-        .qr-card { background: #ffffff; color: #0f172a; border-radius: 8px; padding: 6px; text-align: center; width: 108px; flex-shrink: 0; }
-        .qr-card img { width: 92px; height: 92px; display: block; margin: 0 auto; }
+        .qr-card { background: #ffffff; color: #0f172a; border-radius: 8px; padding: 6px; text-align: center; width: 112px; flex-shrink: 0; }
+        .qr-card img { width: 98px; height: 98px; display: block; margin: 0 auto; }
         .qr-lbl { font-size: 9px; font-family: monospace; font-weight: 700; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .payload-box { font-size: 10px; font-family: monospace; color: #93c5fd; background: #1e293b; padding: 6px 8px; border-radius: 6px; margin-top: 8px; word-break: break-all; }
         .detail-box { background: #0f172a; border: 1px solid #38bdf8; border-radius: 12px; padding: 14px; margin-top: 14px; }
@@ -621,9 +620,33 @@ export default function App() {
         .modal-box { max-width: 840px; margin: 0 auto; background: #ffffff; color: #0f172a; border-radius: 12px; padding: 16px; }
         .page-sheet { position: relative; border: 1px solid #cbd5e1; margin-top: 14px; background: #fff; overflow: hidden; }
         .page-sheet img.bill-img { width: 100%; height: auto; display: block; }
-        .top-right-qr { position: absolute; top: 10px; right: 10px; background: #ffffff; border: 2px solid #000000; padding: 4px; z-index: 10; text-align: center; max-width: 106px; }
-        .top-right-qr img { width: 88px; height: 88px; display: block; margin: 0 auto; }
-        .top-right-qr div { font-size: 9px; font-family: monospace; font-weight: 700; color: #000; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .top-right-qr {
+          position: absolute;
+          top: 24px;
+          right: 26px;
+          background: #ffffff;
+          border: 2px solid #000000;
+          padding: 5px;
+          z-index: 10;
+          text-align: center;
+          width: 112px;
+        }
+        .top-right-qr img {
+          width: 98px;
+          height: 98px;
+          display: block;
+          margin: 0 auto;
+        }
+        .top-right-qr div {
+          font-size: 9px;
+          font-family: monospace;
+          font-weight: 700;
+          color: #000;
+          margin-top: 2px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
         @page { size: auto; margin: 0; }
         @media print {
           html, body { background: #fff !important; color: #000 !important; margin: 0 !important; padding: 0 !important; }
@@ -823,216 +846,4 @@ export default function App() {
 
             <div className="row" style={{ marginTop: 12, justifyContent: 'flex-start' }}>
               {!cameraOn ? (
-                <button className="btn" onClick={startCameraScanner}>
-                  Turn On Camera Scanner
-                </button>
-              ) : (
-                <button className="btn-red" onClick={stopCamera}>
-                  Stop Camera
-                </button>
-              )}
-
-              <button className="btn-dark" onClick={() => qrImgInputRef.current?.click()}>
-                Upload QR Photo
-              </button>
-              <input
-                ref={qrImgInputRef}
-                type="file"
-                accept="image/*"
-                style={{ display: 'none' }}
-                onChange={handleScanQrImageFile}
-              />
-            </div>
-
-            {scanError && (
-              <div style={{ marginTop: 10, color: '#fbbf24', fontSize: 12 }}>{scanError}</div>
-            )}
-
-            {cameraOn && (
-              <div style={{ marginTop: 14, maxWidth: 380 }}>
-                <video
-                  ref={videoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  style={{
-                    width: '100%',
-                    borderRadius: 12,
-                    border: '2px solid #f59e0b',
-                    background: '#000'
-                  }}
-                />
-                <canvas ref={canvasRef} style={{ display: 'none' }} />
-              </div>
-            )}
-
-            {scannedBill && (
-              <div className="detail-box">
-                <div className="row" style={{ marginBottom: 10 }}>
-                  <strong style={{ color: '#34d399', fontSize: 14 }}>
-                    Scanned Bill Details ({scannedBill.invoiceNo})
-                  </strong>
-                  <span style={{ fontSize: 11, color: '#94a3b8' }}>
-                    Scanned at {scannedBill.scannedAt}
-                  </span>
-                </div>
-
-                <div className="grid3">
-                  <div className="detail-item">
-                    <span>Invoice No</span>
-                    <b>{scannedBill.invoiceNo}</b>
-                  </div>
-                  <div className="detail-item">
-                    <span>Agency</span>
-                    <b>{scannedBill.agencyCode}</b>
-                  </div>
-                  <div className="detail-item">
-                    <span>Status</span>
-                    <b>{scannedBill.status}</b>
-                  </div>
-                  <div className="detail-item">
-                    <span>Shop / Customer</span>
-                    <b>{scannedBill.shopName}</b>
-                  </div>
-                  <div className="detail-item">
-                    <span>Bill Date</span>
-                    <b>{scannedBill.billDate}</b>
-                  </div>
-                  <div className="detail-item">
-                    <span>Items / Net Amount</span>
-                    <b>
-                      {scannedBill.itemCount} items • LKR {scannedBill.netAmount}
-                    </b>
-                  </div>
-                </div>
-
-                <div className="payload-box">Raw QR Data: {scannedBill.rawText}</div>
-
-                <div className="row" style={{ marginTop: 12, justifyContent: 'flex-start' }}>
-                  <button className="btn-green" onClick={() => updateScannedStatus('Paid')}>
-                    Mark Paid
-                  </button>
-                  <button className="btn-amber" onClick={() => updateScannedStatus('Half')}>
-                    Mark Half
-                  </button>
-                  <button className="btn-red" onClick={() => updateScannedStatus('Unpaid')}>
-                    Mark Unpaid
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {scanHistory.length > 0 && (
-              <div style={{ marginTop: 16 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: '#cbd5e1', marginBottom: 8 }}>
-                  Recently Scanned Bills ({scanHistory.length})
-                </div>
-                {scanHistory.map((item, i) => (
-                  <div
-                    key={`${item.invoiceNo}-${i}`}
-                    onClick={() => setScannedBill(item)}
-                    style={{
-                      background: '#0f172a',
-                      border: '1px solid #334155',
-                      borderRadius: 8,
-                      padding: '8px 12px',
-                      marginBottom: 8,
-                      cursor: 'pointer',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      fontSize: 12
-                    }}
-                  >
-                    <div>
-                      <b style={{ color: '#fbbf24' }}>{item.invoiceNo}</b> — {item.shopName} (LKR{' '}
-                      {item.netAmount})
-                    </div>
-                    <span style={{ fontWeight: 700, color: '#34d399' }}>{item.status}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {printDoc && (
-        <div className="modal-bg">
-          <div className="modal-box">
-            <div
-              className="row no-print"
-              style={{ paddingBottom: 10, borderBottom: '1px solid #e2e8f0' }}
-            >
-              <div>
-                <strong style={{ fontSize: 14 }}>{printDoc.fileName}</strong>
-                <div style={{ fontSize: 11, color: '#475569' }}>
-                  {printDoc.pages.length} Pages total • {qrPagesCount(printDoc)} Bill QR(s) placed on bill start pages only
-                </div>
-              </div>
-              <div className="row">
-                <button className="btn" onClick={() => window.print()}>
-                  Print Now
-                </button>
-                <button className="btn-dark" onClick={() => setPrintDoc(null)}>
-                  Close
-                </button>
-              </div>
-            </div>
-
-            {printDoc.pages.map(pg => (
-              <div key={pg.pageNumber} className="page-sheet">
-                <div
-                  className="no-print"
-                  style={{
-                    padding: '6px 10px',
-                    background: '#f8fafc',
-                    borderBottom: '1px solid #e2e8f0',
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    gap: 8,
-                    fontSize: 11
-                  }}
-                >
-                  <span>
-                    <b>Page {pg.pageNumber}</b> — {pg.details.invoiceNo}
-                    {pg.details.netAmount ? ` | LKR ${pg.details.netAmount}` : ''}
-                  </span>
-                  <button
-                    type="button"
-                    className="btn-dark"
-                    style={{ padding: '4px 10px', fontSize: 11 }}
-                    onClick={() => togglePageQr(printDoc.id, pg.pageNumber)}
-                  >
-                    {pg.showQr ? 'Hide QR on this Page' : 'Show QR on this Page'}
-                  </button>
-                </div>
-
-                {pg.showQr && pg.qrDataUrl && (
-                  <div className="top-right-qr">
-                    <img src={pg.qrDataUrl} alt={pg.details.invoiceNo} />
-                    <div>{pg.details.invoiceNo}</div>
-                  </div>
-                )}
-
-                {pg.imageUrl ? (
-                  <img
-                    className="bill-img"
-                    src={pg.imageUrl}
-                    alt={`${printDoc.fileName} Page ${pg.pageNumber}`}
-                  />
-                ) : (
-                  <div style={{ padding: 32, textAlign: 'center', fontSize: 13 }}>
-                    Page {pg.pageNumber} ({pg.details.invoiceNo})
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+                <button className="btn" onClick={
