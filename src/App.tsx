@@ -44,7 +44,6 @@ interface ScannedBillRecord {
 
 const PDFJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
 const WORKER_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-const JSQR_URL = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js';
 
 function loadScriptOnce(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -188,154 +187,50 @@ export default function App() {
   const [docs, setDocs] = useState<UploadedPdfDoc[]>([]);
   const [printDoc, setPrintDoc] = useState<UploadedPdfDoc | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const qrImgInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [cameraOn, setCameraOn] = useState(false);
+  const [scannerInput, setScannerInput] = useState('');
   const [scanError, setScanError] = useState('');
-  const [manualQrInput, setManualQrInput] = useState('');
   const [scannedBill, setScannedBill] = useState<ScannedBillRecord | null>(null);
   const [scanHistory, setScanHistory] = useState<ScannedBillRecord[]>([]);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const intervalRef = useRef<number | null>(null);
+  const scannerInputRef = useRef<HTMLInputElement | null>(null);
 
   const agencyCode = agency === 'Anuradhapura' ? 'CG0388' : 'CG0392';
 
-  const stopCamera = () => {
-    setCameraOn(false);
-    if (intervalRef.current) {
-      window.clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-    if (videoRef.current && videoRef.current.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach(t => t.stop());
-      videoRef.current.srcObject = null;
-    }
-  };
-
   useEffect(() => {
-    return () => stopCamera();
-  }, []);
+    if (tab === 'scan') {
+      const t = window.setTimeout(() => {
+        scannerInputRef.current?.focus();
+      }, 60);
+      return () => window.clearTimeout(t);
+    }
+  }, [tab]);
 
   const handleQrDecoded = (text: string) => {
     if (!text || !text.trim()) return;
     const record = parseScannedQrText(text, agencyCode);
     setScannedBill(record);
     setScanError('');
+    setScannerInput('');
     setScanHistory(prev => {
       const withoutDup = prev.filter(
         x => !(x.invoiceNo === record.invoiceNo && x.rawText === record.rawText)
       );
       return [record, ...withoutDup].slice(0, 15);
     });
+    window.setTimeout(() => {
+      scannerInputRef.current?.focus();
+    }, 30);
   };
 
-  const startCameraScanner = async () => {
-    setScanError('');
-    setCameraOn(true);
-    try {
-      await loadScriptOnce(JSQR_URL).catch(() => {});
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' } }
-      });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+  const handleScannerKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (scannerInput.trim()) {
+        handleQrDecoded(scannerInput);
+      } else {
+        setScanError('QR කෝඩ් එක scan කරන්න හෝ text එක enter කරන්න.');
       }
-
-      const BarcodeDetectorCtor = (window as any).BarcodeDetector;
-      let nativeDetector: any = null;
-      if (BarcodeDetectorCtor) {
-        try {
-          nativeDetector = new BarcodeDetectorCtor({ formats: ['qr_code'] });
-        } catch {
-          nativeDetector = null;
-        }
-      }
-
-      if (intervalRef.current) window.clearInterval(intervalRef.current);
-      intervalRef.current = window.setInterval(async () => {
-        if (!videoRef.current || videoRef.current.readyState < 2) return;
-
-        if (nativeDetector) {
-          try {
-            const codes = await nativeDetector.detect(videoRef.current);
-            if (codes && codes.length > 0 && codes[0].rawValue) {
-              handleQrDecoded(String(codes[0].rawValue));
-              return;
-            }
-          } catch {
-            // fallback to jsQR
-          }
-        }
-
-        const jsQR = (window as any).jsQR;
-        if (jsQR && canvasRef.current) {
-          const c = canvasRef.current;
-          const ctx = c.getContext('2d');
-          const w = videoRef.current.videoWidth || 640;
-          const h = videoRef.current.videoHeight || 480;
-          c.width = w;
-          c.height = h;
-          if (ctx) {
-            ctx.drawImage(videoRef.current, 0, 0, w, h);
-            const imgData = ctx.getImageData(0, 0, w, h);
-            const decoded = jsQR(imgData.data, imgData.width, imgData.height, {
-              inversionAttempts: 'attemptBoth'
-            });
-            if (decoded && decoded.data) {
-              handleQrDecoded(String(decoded.data));
-            }
-          }
-        }
-      }, 250);
-    } catch (err) {
-      console.error(err);
-      setCameraOn(false);
-      setScanError(
-        'කැමරාව open කරගත නොහැක — Browser Camera Permission දී නැවත උත්සාහ කරන්න (හෝ "Upload QR Photo" / Paste QR Data භාවිත කරන්න).'
-      );
     }
-  };
-
-  const handleScanQrImageFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setScanError('');
-    try {
-      await loadScriptOnce(JSQR_URL);
-      const jsQR = (window as any).jsQR;
-      const reader = new FileReader();
-      reader.onload = () => {
-        const img = new Image();
-        img.onload = () => {
-          const c = document.createElement('canvas');
-          c.width = img.width;
-          c.height = img.height;
-          const ctx = c.getContext('2d');
-          if (!ctx || !jsQR) {
-            setScanError('QR image decode කිරීමට නොහැකි විය.');
-            return;
-          }
-          ctx.drawImage(img, 0, 0);
-          const data = ctx.getImageData(0, 0, c.width, c.height);
-          const res = jsQR(data.data, data.width, data.height, {
-            inversionAttempts: 'attemptBoth'
-          });
-          if (res && res.data) {
-            handleQrDecoded(String(res.data));
-          } else {
-            setScanError('මෙම පින්තූරයෙන් QR කෝඩ් එක හඳුනාගත නොහැකි විය.');
-          }
-        };
-        img.src = String(reader.result || '');
-      };
-      reader.readAsDataURL(file);
-    } catch {
-      setScanError('QR decoder load කිරීමට නොහැකි විය.');
-    }
-    e.target.value = '';
   };
 
   const updateScannedStatus = (newStatus: 'Unpaid' | 'Half' | 'Paid') => {
@@ -523,4 +418,291 @@ export default function App() {
       const refreshed = await Promise.all(
         docs.map(async d => ({
           ...d,
-          pages:
+          pages: await Promise.all(
+            d.pages.map(async p => {
+              const payload = buildFullBillQrPayload(agencyCode, p.details);
+              const qrDataUrl = p.hasQr ? await makeRealQrDataUrl(payload) : '';
+              return { ...p, qrPayload: payload, qrDataUrl };
+            })
+          )
+        }))
+      );
+      if (!cancelled) {
+        setDocs(refreshed);
+        if (printDoc) {
+          setPrintDoc(refreshed.find(x => x.id === printDoc.id) || null);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [agency]);
+
+  const qrPagesCount = (d: UploadedPdfDoc) => d.pages.filter(p => p.hasQr).length;
+
+  return (
+    <div className="erp-root">
+      <style>{`
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f1f5f9; }
+        .erp-root { min-height: 100vh; padding: 16px; }
+        .wrap { max-width: 980px; margin: 0 auto; }
+        .card { background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 16px; margin-bottom: 16px; }
+        .row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
+        .title { margin: 0; font-size: 22px; color: #fbbf24; font-weight: 800; }
+        .sub { margin: 4px 0 0; font-size: 12px; color: #94a3b8; }
+        .btn { background: #f59e0b; color: #0f172a; border: none; border-radius: 8px; padding: 8px 14px; font-weight: 700; font-size: 12px; cursor: pointer; }
+        .btn:hover { background: #fbbf24; }
+        .btn-dark { background: #334155; color: #f8fafc; border: 1px solid #475569; border-radius: 8px; padding: 7px 12px; font-weight: 700; font-size: 12px; cursor: pointer; }
+        .btn-green { background: #16a34a; color: #fff; border: none; border-radius: 7px; padding: 6px 12px; font-weight: 700; font-size: 12px; cursor: pointer; }
+        .btn-amber { background: #d97706; color: #fff; border: none; border-radius: 7px; padding: 6px 12px; font-weight: 700; font-size: 12px; cursor: pointer; }
+        .btn-red { background: #dc2626; color: #fff; border: none; border-radius: 7px; padding: 6px 12px; font-weight: 700; font-size: 12px; cursor: pointer; }
+        .drop { border: 2px dashed #f59e0b; background: #0f172a; border-radius: 12px; padding: 20px; text-align: center; margin-top: 10px; }
+        .doc-box { background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 14px; margin-top: 12px; }
+        .inp { background: #1e293b; color: #f8fafc; border: 1px solid #475569; border-radius: 7px; padding: 6px 9px; font-size: 12px; width: 100%; }
+        .scan-inp {
+          background: #0f172a;
+          color: #fbbf24;
+          border: 2px solid #f59e0b;
+          border-radius: 10px;
+          padding: 12px 14px;
+          font-size: 14px;
+          font-family: monospace;
+          font-weight: 700;
+          width: 100%;
+          outline: none;
+        }
+        .scan-inp:focus {
+          border-color: #34d399;
+          box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.2);
+        }
+        .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+        @media (max-width: 640px) { .grid3 { grid-template-columns: 1fr; } }
+        .qr-card { background: #ffffff; color: #0f172a; border-radius: 8px; padding: 6px; text-align: center; width: 118px; flex-shrink: 0; }
+        .qr-card img { width: 104px; height: 104px; display: block; margin: 0 auto; }
+        .qr-lbl { font-size: 9px; font-family: monospace; font-weight: 700; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .payload-box { font-size: 10px; font-family: monospace; color: #93c5fd; background: #1e293b; padding: 6px 8px; border-radius: 6px; margin-top: 8px; word-break: break-all; }
+        .detail-box { background: #0f172a; border: 1px solid #38bdf8; border-radius: 12px; padding: 14px; margin-top: 14px; }
+        .detail-item { background: #1e293b; padding: 8px 10px; border-radius: 8px; font-size: 12px; }
+        .detail-item span { color: #94a3b8; display: block; font-size: 10px; }
+        .detail-item b { color: #f8fafc; font-size: 13px; }
+        .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.88); overflow-y: auto; padding: 16px; z-index: 99; }
+        .modal-box { max-width: 840px; margin: 0 auto; background: #ffffff; color: #0f172a; border-radius: 12px; padding: 16px; }
+        .page-sheet { position: relative; border: 1px solid #cbd5e1; margin-top: 14px; background: #fff; overflow: hidden; }
+        .page-sheet img.bill-img { width: 100%; height: auto; display: block; }
+        .top-right-qr {
+          position: absolute;
+          top: 56px;
+          right: 68px;
+          background: #ffffff;
+          border: 2px solid #000000;
+          padding: 6px;
+          z-index: 10;
+          text-align: center;
+          width: 118px;
+        }
+        .top-right-qr img {
+          width: 104px;
+          height: 104px;
+          display: block;
+          margin: 0 auto;
+        }
+        .top-right-qr div {
+          font-size: 9px;
+          font-family: monospace;
+          font-weight: 700;
+          color: #000;
+          margin-top: 2px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        @page { size: auto; margin: 0; }
+        @media print {
+          html, body { background: #fff !important; color: #000 !important; margin: 0 !important; padding: 0 !important; }
+          .no-print { display: none !important; }
+          .modal-bg { position: static !important; background: #fff !important; padding: 0 !important; overflow: visible !important; }
+          .modal-box { max-width: 100% !important; padding: 0 !important; border-radius: 0 !important; box-shadow: none !important; }
+          .page-sheet { border: none !important; margin: 0 !important; page-break-inside: avoid; break-inside: avoid; page-break-after: always; break-after: page; }
+          .page-sheet:last-child { page-break-after: auto; break-after: auto; }
+          .page-sheet img.bill-img { max-height: 98vh; width: auto; max-width: 100%; margin: 0 auto; }
+          .top-right-qr { top: 56px !important; right: 68px !important; }
+        }
+      `}</style>
+
+      <div className="wrap">
+        <div className="card no-print">
+          <div className="row">
+            <div>
+              <h1 className="title">GOLDEN DISTRIBUTORS ERP</h1>
+              <p className="sub">
+                Agency: <b>{agency} ({agencyCode})</b> | Owner: Egodagedara Arjunal Nishantha Kumara
+              </p>
+            </div>
+            <div className="row">
+              <button
+                className={agency === 'Mihintale' ? 'btn' : 'btn-dark'}
+                onClick={() => setAgency('Mihintale')}
+              >
+                Mihintale (CG0392)
+              </button>
+              <button
+                className={agency === 'Anuradhapura' ? 'btn' : 'btn-dark'}
+                onClick={() => setAgency('Anuradhapura')}
+              >
+                Anuradhapura (CG0388)
+              </button>
+            </div>
+          </div>
+
+          <div className="row" style={{ marginTop: 14, justifyContent: 'flex-start' }}>
+            <button
+              className={tab === 'pdf' ? 'btn' : 'btn-dark'}
+              onClick={() => setTab('pdf')}
+            >
+              1. PDF Bill & QR Print
+            </button>
+            <button
+              className={tab === 'scan' ? 'btn' : 'btn-dark'}
+              onClick={() => setTab('scan')}
+            >
+              2. QR Scanner Enter & Bill Details
+            </button>
+          </div>
+        </div>
+
+        {tab === 'pdf' && (
+          <div className="card no-print">
+            <h2 style={{ margin: 0, fontSize: 16, color: '#fbbf24' }}>
+              Per-Bill Scannable QR (All Bill Details Included • No 2nd-Page Overlap)
+            </h2>
+            <p className="sub">
+              එක් එක් බිලේ පළමු පිටුවට පමණක් ඉබේම QR එක වැටේ. 2වෙනි පිටුවේ ඩේටා වැසෙන්නේ නැත.
+            </p>
+
+            <div className="drop">
+              <p style={{ margin: '0 0 10px', fontSize: 13 }}>PDF බිල් ෆයිලය තෝරන්න:</p>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".pdf,application/pdf"
+                multiple
+                onChange={onFilePick}
+              />
+            </div>
+
+            {docs.map(d => {
+              const firstQrPage = d.pages.find(p => p.hasQr) || d.pages[0];
+              return (
+                <div key={d.id} className="doc-box">
+                  <div className="row" style={{ alignItems: 'flex-start' }}>
+                    <div style={{ flex: 1, minWidth: 240 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: '#34d399' }}>
+                        {d.fileName}{' '}
+                        {d.loading
+                          ? '(Rendering pages & QRs...)'
+                          : `(${d.pages.length} Pages • ${qrPagesCount(d)} Bill QRs)`}
+                      </div>
+                      {d.errorMsg && (
+                        <div style={{ fontSize: 11, color: '#fbbf24', marginTop: 4 }}>{d.errorMsg}</div>
+                      )}
+
+                      {firstQrPage && (
+                        <>
+                          <div className="grid3">
+                            <input
+                              className="inp"
+                              value={firstQrPage.details.invoiceNo}
+                              onChange={e =>
+                                updatePageDetails(d.id, firstQrPage.pageNumber, {
+                                  invoiceNo: e.target.value
+                                })
+                              }
+                              placeholder="Invoice No"
+                            />
+                            <input
+                              className="inp"
+                              value={firstQrPage.details.shopName}
+                              onChange={e =>
+                                updatePageDetails(d.id, firstQrPage.pageNumber, {
+                                  shopName: e.target.value
+                                })
+                              }
+                              placeholder="Shop / Customer"
+                            />
+                            <input
+                              className="inp"
+                              value={firstQrPage.details.billDate}
+                              onChange={e =>
+                                updatePageDetails(d.id, firstQrPage.pageNumber, {
+                                  billDate: e.target.value
+                                })
+                              }
+                              placeholder="Date"
+                            />
+                          </div>
+
+                          <div className="grid3">
+                            <input
+                              className="inp"
+                              value={firstQrPage.details.itemCount}
+                              onChange={e =>
+                                updatePageDetails(d.id, firstQrPage.pageNumber, {
+                                  itemCount: e.target.value
+                                })
+                              }
+                              placeholder="Items Count"
+                            />
+                            <input
+                              className="inp"
+                              value={firstQrPage.details.netAmount}
+                              onChange={e =>
+                                updatePageDetails(d.id, firstQrPage.pageNumber, {
+                                  netAmount: e.target.value,
+                                  totalAmount: e.target.value
+                                })
+                              }
+                              placeholder="Net / Total (LKR)"
+                            />
+                            <select
+                              className="inp"
+                              value={firstQrPage.details.status}
+                              onChange={e =>
+                                updatePageDetails(d.id, firstQrPage.pageNumber, {
+                                  status: e.target.value as 'Unpaid' | 'Half' | 'Paid'
+                                })
+                              }
+                            >
+                              <option value="Unpaid">Unpaid</option>
+                              <option value="Half">Half</option>
+                              <option value="Paid">Paid</option>
+                            </select>
+                          </div>
+
+                          <div className="payload-box">QR Data: {firstQrPage.qrPayload}</div>
+                        </>
+                      )}
+                    </div>
+
+                    {firstQrPage?.qrDataUrl && (
+                      <div className="qr-card">
+                        <img src={firstQrPage.qrDataUrl} alt={firstQrPage.details.invoiceNo} />
+                        <div className="qr-lbl">{firstQrPage.details.invoiceNo}</div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                    <button className="btn" onClick={() => setPrintDoc(d)}>
+                      Preview & Print ({d.pages.length || 1} Pages)
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {tab === 'scan' && (
+          <div className
