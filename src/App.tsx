@@ -72,14 +72,360 @@ function loadScriptOnce(src: string): Promise<void> {
   });
 }
 
-// Clean compact payload so QR blocks stay large, sharp, and fast to scan
 function buildFullBillQrPayload(agencyCode: string, d: BillDetails): string {
   const cleanInv = (d.invoiceNo || 'BILL').trim().slice(0, 28);
   const cleanShop = (d.shopName || '-').replace(/[|\r\n]+/g, ' ').trim().slice(0, 24);
   const cleanDate = (d.billDate || '-').trim().slice(0, 12);
   const cleanNet = (d.netAmount || d.totalAmount || '0').trim().slice(0, 12);
   const cleanItems = (d.itemCount || '0').trim().slice(0, 5);
-  return `${cleanInv}\vert{}${agencyCode}|${cleanShop}\vert{}${cleanDate}|${cleanItems}\vert{}${cleanNet}|${d.status}`; }  function parseScannedQrText(raw: string, fallbackAgencyCode: string): ScannedBillRecord { const trimmed = raw.trim(); const parts = trimmed.split('\vert{}').map(p => p.trim());  // Supports both "INV:..." key-value and compact "INV\vert{}AG\vert{}SHOP\vert{}DT\vert{}ITEMS\vert{}NET\vert{}ST" format const getField = (prefix: string) => { const found = parts.find(p => p.toUpperCase().startsWith(prefix.toUpperCase() + ':')); return found ? found.slice(prefix.length + 1).trim() : ''; };  const hasKeyFormat = trimmed.includes('INV:') \vert{}\vert{} trimmed.includes('AG:');  const inv = hasKeyFormat ? getField('INV') \vert{}\vert{} 'UNKNOWN-BILL' : parts[0] \vert{}\vert{} 'UNKNOWN-BILL'; const ag = hasKeyFormat ? getField('AG') \vert{}\vert{} fallbackAgencyCode : parts[1] \vert{}\vert{} fallbackAgencyCode; const shop = hasKeyFormat ? getField('SHOP') \vert{}\vert{} '-' : parts[2] \vert{}\vert{} '-'; const dt = hasKeyFormat ? getField('DT') \vert{}\vert{} new Date().toISOString().slice(0, 10) : parts[3] \vert{}\vert{} new Date().toISOString().slice(0, 10); const items = hasKeyFormat ? getField('ITEMS') \vert{}\vert{} '0' : parts[4] \vert{}\vert{} '0'; const net = hasKeyFormat ? getField('NET') \vert{}\vert{} getField('TOT') \vert{}\vert{} '0' : parts[5] \vert{}\vert{} '0'; const stRaw = hasKeyFormat ? getField('ST') : parts[6] \vert{}\vert{} 'Unpaid';  const status: 'Unpaid' \vert{} 'Half' \vert{} 'Paid' = stRaw === 'Paid' \vert{}\vert{} stRaw === 'Half' \vert{}\vert{} stRaw === 'Unpaid' ? stRaw : 'Unpaid';  return { rawText: trimmed, invoiceNo: inv, agencyCode: ag, shopName: shop, billDate: dt, itemCount: items, totalAmount: net, netAmount: net, status, scannedAt: new Date().toLocaleTimeString() }; }  async function makeRealQrDataUrl(payload: string): Promise<string> { try { return await QRCode.toDataURL(payload, { width: 260, margin: 4, errorCorrectionLevel: 'M', color: { dark: '#000000', light: '#ffffff' } }); } catch (err) { console.error('QR generation failed:', err); return ''; } }  function parsePageTextDetails(rawText: string, fallbackInvoice: string, pageNum: number): BillDetails { const compact = rawText.replace(/\s+/g, ' ').trim();  const invMatch = compact.match( /\b(\d{2}[A-Z]{3}_[A-Z0-9_]+\vert{}CG\d{4}[A-Z0-9]+\vert{}INV[-_:/]?\d+[A-Z0-9_-]*)\b/i ); const invoiceNo = invMatch ? invMatch[1].toUpperCase() : `${fallbackInvoice}-P${pageNum}`;  const shopMatch = compact.match( /Invoiced\s*To\s*:?\s*([A-Za-z0-9\s.&'/-]{2,35}?)(?=\s+(?:Tel\vert{}Ordered\vert{}Invoice\vert{}Item\vert{}Gross\vert{}Total\vert{}No\.\vert{}\d{7,}))/i ); const shopName = shopMatch ? shopMatch[1].trim() : '';  const dateMatch = compact.match( /\b(\d{4}[-/]\d{2}[-/]\d{2}\vert{}\d{2}[-/]\d{2}[-/]\d{4}\vert{}\d{2}\s+[A-Za-z]{3}\s+\d{4})\b/ ); const billDate = dateMatch ? dateMatch[1] : new Date().toISOString().slice(0, 10);  const itemsMatch = compact.match( /(?:Total\s*(?:No\.?\s*of\s*)?Items?\vert{}Item\s*Count\vert{}Qty\s*Total)\s*:?\s*(\d+)/i ); const itemCount = itemsMatch ? itemsMatch[1] : '';  const netMatch = compact.match( /(?:Net\s*Total\vert{}Grand\s*Total\vert{}Total\s*Value\vert{}Net\s*Amount\vert{}Balance\s*Due)\s*:?\s*(?:Rs\.?\vert{}LKR)?\s*([\d,]+\.\d{2}\vert{}[\d,]+)/i ); const netVal = netMatch ? netMatch[1].replace(/,/g, '') : '';  return { invoiceNo, shopName, billDate, itemCount, totalAmount: netVal, netAmount: netVal, status: 'Unpaid' }; }  export default function App() { const [agency, setAgency] = useState<'Mihintale' \vert{} 'Anuradhapura'>('Mihintale'); const [tab, setTab] = useState<'pdf' \vert{} 'scan'>('pdf'); const [docs, setDocs] = useState<UploadedPdfDoc[]>([]); const [printDoc, setPrintDoc] = useState<UploadedPdfDoc \vert{} null>(null); const fileRef = useRef<HTMLInputElement \vert{} null>(null); const qrImgInputRef = useRef<HTMLInputElement \vert{} null>(null);  const [cameraOn, setCameraOn] = useState(false); const [scanError, setScanError] = useState(''); const [scannedBill, setScannedBill] = useState<ScannedBillRecord \vert{} null>(null); const [scanHistory, setScanHistory] = useState<ScannedBillRecord[]>([]); const videoRef = useRef<HTMLVideoElement \vert{} null>(null); const canvasRef = useRef<HTMLCanvasElement \vert{} null>(null); const intervalRef = useRef<number \vert{} null>(null);  const agencyCode = agency === 'Anuradhapura' ? 'CG0388' : 'CG0392';  const stopCamera = () => { setCameraOn(false); if (intervalRef.current) { window.clearInterval(intervalRef.current); intervalRef.current = null; } if (videoRef.current && videoRef.current.srcObject) { const stream = videoRef.current.srcObject as MediaStream; stream.getTracks().forEach(t => t.stop()); videoRef.current.srcObject = null; } };  useEffect(() => { return () => stopCamera(); }, []);  const handleQrDecoded = (text: string) => { if (!text \vert{}\vert{} !text.trim()) return; const record = parseScannedQrText(text, agencyCode); setScannedBill(record); setScanError(''); setScanHistory(prev => { const withoutDup = prev.filter( x => !(x.invoiceNo === record.invoiceNo && x.rawText === record.rawText) ); return [record, ...withoutDup].slice(0, 15); }); };  const startCameraScanner = async () => { setScanError(''); setCameraOn(true); try { await loadScriptOnce(JSQR_URL).catch(() => {}); const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } }); if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }  const BarcodeDetectorCtor = (window as any).BarcodeDetector; let nativeDetector: any = null; if (BarcodeDetectorCtor) { try { nativeDetector = new BarcodeDetectorCtor({ formats: ['qr_code'] }); } catch { nativeDetector = null; } }  if (intervalRef.current) window.clearInterval(intervalRef.current); intervalRef.current = window.setInterval(async () => { if (!videoRef.current \vert{}\vert{} videoRef.current.readyState < 2) return;  if (nativeDetector) { try { const codes = await nativeDetector.detect(videoRef.current); if (codes && codes.length > 0 && codes[0].rawValue) { handleQrDecoded(String(codes[0].rawValue)); return; } } catch { // fallback to jsQR } }  const jsQR = (window as any).jsQR; if (jsQR && canvasRef.current) { const c = canvasRef.current; const ctx = c.getContext('2d'); const w = videoRef.current.videoWidth \vert{}\vert{} 640; const h = videoRef.current.videoHeight \vert{}\vert{} 480; c.width = w; c.height = h; if (ctx) { ctx.drawImage(videoRef.current, 0, 0, w, h); const imgData = ctx.getImageData(0, 0, w, h); const decoded = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' }); if (decoded && decoded.data) { handleQrDecoded(String(decoded.data)); } } } }, 250); } catch (err) { console.error(err); setCameraOn(false); setScanError( 'කැමරාව open කරගත නොහැක — Browser Camera Permission දී නැවත උත්සාහ කරන්න (හෝ "Upload QR Photo" භාවිත කරන්න).' ); } };  const handleScanQrImageFile = async (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (!file) return; setScanError(''); try { await loadScriptOnce(JSQR_URL); const jsQR = (window as any).jsQR; const reader = new FileReader(); reader.onload = () => { const img = new Image(); img.onload = () => { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const ctx = c.getContext('2d'); if (!ctx \vert{}\vert{} !jsQR) { setScanError('QR image decode කිරීමට නොහැකි විය.'); return; } ctx.drawImage(img, 0, 0); const data = ctx.getImageData(0, 0, c.width, c.height); const res = jsQR(data.data, data.width, data.height, { inversionAttempts: 'attemptBoth' }); if (res && res.data) { handleQrDecoded(String(res.data)); } else { setScanError('මෙම පින්තූරයෙන් QR කෝඩ් එක හඳුනාගත නොහැකි විය.'); } }; img.src = String(reader.result \vert{}\vert{} ''); }; reader.readAsDataURL(file); } catch { setScanError('QR decoder load කිරීමට නොහැකි විය.'); } e.target.value = ''; };  const updateScannedStatus = (newStatus: 'Unpaid' \vert{} 'Half' \vert{} 'Paid') => { if (!scannedBill) return; const updated: ScannedBillRecord = { ...scannedBill, status: newStatus }; setScannedBill(updated); setScanHistory(prev => prev.map(x => x.invoiceNo === updated.invoiceNo && x.rawText === updated.rawText ? updated : x ) ); };  const renderPdfBills = async (dataUrl: string, baseInv: string): Promise<PdfPageItem[]> => { await loadScriptOnce(PDFJS_URL); const pdfjsLib = (window as any).pdfjsLib; if (!pdfjsLib) throw new Error('pdfjsLib unavailable'); pdfjsLib.GlobalWorkerOptions.workerSrc = WORKER_URL;  const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl; const bin = atob(base64); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) { bytes[i] = bin.charCodeAt(i); }  const pdf = await pdfjsLib.getDocument({ data: bytes }).promise; const totalPages = pdf.numPages \vert{}\vert{} 1; const pages: PdfPageItem[] = []; let lastInvoiceSeen = '';  for (let p = 1; p <= totalPages; p++) { const page = await pdf.getPage(p); const vp = page.getViewport({ scale: 1.45 }); const canvas = document.createElement('canvas'); canvas.width = vp.width; canvas.height = vp.height; const ctx = canvas.getContext('2d'); if (ctx) { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height); await page.render({ canvasContext: ctx, viewport: vp }).promise; }  let txt = ''; try { const tc = await page.getTextContent(); txt = (tc.items \vert{}\vert{} []).map((it: any) => it.str \vert{}\vert{} '').join(' '); } catch { txt = ''; }  const details = parsePageTextDetails(txt, baseInv, p);  const isSameAsPrevInvoice = lastInvoiceSeen !== '' && details.invoiceNo.toUpperCase() === lastInvoiceSeen.toUpperCase(); const shouldHaveQr = !isSameAsPrevInvoice;  lastInvoiceSeen = details.invoiceNo;  const payload = buildFullBillQrPayload(agencyCode, details); const qrDataUrl = shouldHaveQr ? await makeRealQrDataUrl(payload) : '';  pages.push({ pageNumber: p, imageUrl: canvas.toDataURL('image/jpeg', 0.86), hasQr: shouldHaveQr, qrDataUrl, qrPayload: payload, details }); }  return pages; };  const onFilePick = (e: React.ChangeEvent<HTMLInputElement>) => { const files = e.target.files; if (!files \vert{}\vert{} !files.length) return;  Array.from(files).forEach((file, idx) => { const reader = new FileReader(); reader.onload = async () => { const url = typeof reader.result === 'string' ? reader.result : ''; if (!url) return;  const clean = file.name.replace(/\.[^/.]+$/, ''); const invGuess = clean.match(/(?:CG\d{4}[A-Z0-9]+\vert{}\d{2}[A-Z]{3}_[A-Z0-9_]+)/i); const baseInv = invGuess ? invGuess[0].toUpperCase() : clean \vert{}\vert{} `BILL-${idx + 1}`;
+  return `${cleanInv}|${agencyCode}|${cleanShop}|${cleanDate}|${cleanItems}|${cleanNet}|${d.status}`;
+}
+
+function parseScannedQrText(raw: string, fallbackAgencyCode: string): ScannedBillRecord {
+  const trimmed = raw.trim();
+  const parts = trimmed.split('|').map(p => p.trim());
+
+  const getField = (prefix: string) => {
+    const found = parts.find(p => p.toUpperCase().startsWith(prefix.toUpperCase() + ':'));
+    return found ? found.slice(prefix.length + 1).trim() : '';
+  };
+
+  const hasKeyFormat = trimmed.includes('INV:') || trimmed.includes('AG:');
+
+  const inv = hasKeyFormat ? getField('INV') || 'UNKNOWN-BILL' : parts[0] || 'UNKNOWN-BILL';
+  const ag = hasKeyFormat ? getField('AG') || fallbackAgencyCode : parts[1] || fallbackAgencyCode;
+  const shop = hasKeyFormat ? getField('SHOP') || '-' : parts[2] || '-';
+  const dt = hasKeyFormat
+    ? getField('DT') || new Date().toISOString().slice(0, 10)
+    : parts[3] || new Date().toISOString().slice(0, 10);
+  const items = hasKeyFormat ? getField('ITEMS') || '0' : parts[4] || '0';
+  const net = hasKeyFormat
+    ? getField('NET') || getField('TOT') || '0'
+    : parts[5] || '0';
+  const stRaw = hasKeyFormat ? getField('ST') : parts[6] || 'Unpaid';
+
+  const status: 'Unpaid' | 'Half' | 'Paid' =
+    stRaw === 'Paid' || stRaw === 'Half' || stRaw === 'Unpaid' ? stRaw : 'Unpaid';
+
+  return {
+    rawText: trimmed,
+    invoiceNo: inv,
+    agencyCode: ag,
+    shopName: shop,
+    billDate: dt,
+    itemCount: items,
+    totalAmount: net,
+    netAmount: net,
+    status,
+    scannedAt: new Date().toLocaleTimeString()
+  };
+}
+
+async function makeRealQrDataUrl(payload: string): Promise<string> {
+  try {
+    const mod: any = QRCode;
+    const toDataUrlFn = mod?.toDataURL || mod?.default?.toDataURL;
+    if (typeof toDataUrlFn === 'function') {
+      return await toDataUrlFn(payload, {
+        width: 240,
+        margin: 4,
+        errorCorrectionLevel: 'M',
+        color: {
+          dark: '#000000',
+          light: '#ffffff'
+        }
+      });
+    }
+    return '';
+  } catch (err) {
+    console.error('QR generation failed:', err);
+    return '';
+  }
+}
+
+function parsePageTextDetails(rawText: string, fallbackInvoice: string, pageNum: number): BillDetails {
+  const compact = rawText.replace(/\s+/g, ' ').trim();
+
+  const invMatch = compact.match(
+    /\b(\d{2}[A-Z]{3}_[A-Z0-9_]+|CG\d{4}[A-Z0-9]+|INV[-_:/]?\d+[A-Z0-9_-]*)\b/i
+  );
+  const invoiceNo = invMatch ? invMatch[1].toUpperCase() : `${fallbackInvoice}-P${pageNum}`;
+
+  const shopMatch = compact.match(
+    /Invoiced\s*To\s*:?\s*([A-Za-z0-9\s.&'/-]{2,35}?)(?=\s+(?:Tel|Ordered|Invoice|Item|Gross|Total|No\.|\d{7,}))/i
+  );
+  const shopName = shopMatch ? shopMatch[1].trim() : '';
+
+  const dateMatch = compact.match(
+    /\b(\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4}|\d{2}\s+[A-Za-z]{3}\s+\d{4})\b/
+  );
+  const billDate = dateMatch ? dateMatch[1] : new Date().toISOString().slice(0, 10);
+
+  const itemsMatch = compact.match(
+    /(?:Total\s*(?:No\.?\s*of\s*)?Items?|Item\s*Count|Qty\s*Total)\s*:?\s*(\d+)/i
+  );
+  const itemCount = itemsMatch ? itemsMatch[1] : '';
+
+  const netMatch = compact.match(
+    /(?:Net\s*Total|Grand\s*Total|Total\s*Value|Net\s*Amount|Balance\s*Due)\s*:?\s*(?:Rs\.?|LKR)?\s*([\d,]+\.\d{2}|[\d,]+)/i
+  );
+  const netVal = netMatch ? netMatch[1].replace(/,/g, '') : '';
+
+  return {
+    invoiceNo,
+    shopName,
+    billDate,
+    itemCount,
+    totalAmount: netVal,
+    netAmount: netVal,
+    status: 'Unpaid'
+  };
+}
+
+export default function App() {
+  const [agency, setAgency] = useState<'Mihintale' | 'Anuradhapura'>('Mihintale');
+  const [tab, setTab] = useState<'pdf' | 'scan'>('pdf');
+  const [docs, setDocs] = useState<UploadedPdfDoc[]>([]);
+  const [printDoc, setPrintDoc] = useState<UploadedPdfDoc | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const qrImgInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [cameraOn, setCameraOn] = useState(false);
+  const [scanError, setScanError] = useState('');
+  const [manualQrInput, setManualQrInput] = useState('');
+  const [scannedBill, setScannedBill] = useState<ScannedBillRecord | null>(null);
+  const [scanHistory, setScanHistory] = useState<ScannedBillRecord[]>([]);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const intervalRef = useRef<number | null>(null);
+
+  const agencyCode = agency === 'Anuradhapura' ? 'CG0388' : 'CG0392';
+
+  const stopCamera = () => {
+    setCameraOn(false);
+    if (intervalRef.current) {
+      window.clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach(t => t.stop());
+      videoRef.current.srcObject = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => stopCamera();
+  }, []);
+
+  const handleQrDecoded = (text: string) => {
+    if (!text || !text.trim()) return;
+    const record = parseScannedQrText(text, agencyCode);
+    setScannedBill(record);
+    setScanError('');
+    setScanHistory(prev => {
+      const withoutDup = prev.filter(
+        x => !(x.invoiceNo === record.invoiceNo && x.rawText === record.rawText)
+      );
+      return [record, ...withoutDup].slice(0, 15);
+    });
+  };
+
+  const startCameraScanner = async () => {
+    setScanError('');
+    setCameraOn(true);
+    try {
+      await loadScriptOnce(JSQR_URL).catch(() => {});
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } }
+      });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+
+      const BarcodeDetectorCtor = (window as any).BarcodeDetector;
+      let nativeDetector: any = null;
+      if (BarcodeDetectorCtor) {
+        try {
+          nativeDetector = new BarcodeDetectorCtor({ formats: ['qr_code'] });
+        } catch {
+          nativeDetector = null;
+        }
+      }
+
+      if (intervalRef.current) window.clearInterval(intervalRef.current);
+      intervalRef.current = window.setInterval(async () => {
+        if (!videoRef.current || videoRef.current.readyState < 2) return;
+
+        if (nativeDetector) {
+          try {
+            const codes = await nativeDetector.detect(videoRef.current);
+            if (codes && codes.length > 0 && codes[0].rawValue) {
+              handleQrDecoded(String(codes[0].rawValue));
+              return;
+            }
+          } catch {
+            // fallback to jsQR
+          }
+        }
+
+        const jsQR = (window as any).jsQR;
+        if (jsQR && canvasRef.current) {
+          const c = canvasRef.current;
+          const ctx = c.getContext('2d');
+          const w = videoRef.current.videoWidth || 640;
+          const h = videoRef.current.videoHeight || 480;
+          c.width = w;
+          c.height = h;
+          if (ctx) {
+            ctx.drawImage(videoRef.current, 0, 0, w, h);
+            const imgData = ctx.getImageData(0, 0, w, h);
+            const decoded = jsQR(imgData.data, imgData.width, imgData.height, {
+              inversionAttempts: 'attemptBoth'
+            });
+            if (decoded && decoded.data) {
+              handleQrDecoded(String(decoded.data));
+            }
+          }
+        }
+      }, 250);
+    } catch (err) {
+      console.error(err);
+      setCameraOn(false);
+      setScanError(
+        'කැමරාව open කරගත නොහැක — Browser Camera Permission දී නැවත උත්සාහ කරන්න (හෝ "Upload QR Photo" / Paste QR Data භාවිත කරන්න).'
+      );
+    }
+  };
+
+  const handleScanQrImageFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setScanError('');
+    try {
+      await loadScriptOnce(JSQR_URL);
+      const jsQR = (window as any).jsQR;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement('canvas');
+          c.width = img.width;
+          c.height = img.height;
+          const ctx = c.getContext('2d');
+          if (!ctx || !jsQR) {
+            setScanError('QR image decode කිරීමට නොහැකි විය.');
+            return;
+          }
+          ctx.drawImage(img, 0, 0);
+          const data = ctx.getImageData(0, 0, c.width, c.height);
+          const res = jsQR(data.data, data.width, data.height, {
+            inversionAttempts: 'attemptBoth'
+          });
+          if (res && res.data) {
+            handleQrDecoded(String(res.data));
+          } else {
+            setScanError('මෙම පින්තූරයෙන් QR කෝඩ් එක හඳුනාගත නොහැකි විය.');
+          }
+        };
+        img.src = String(reader.result || '');
+      };
+      reader.readAsDataURL(file);
+    } catch {
+      setScanError('QR decoder load කිරීමට නොහැකි විය.');
+    }
+    e.target.value = '';
+  };
+
+  const updateScannedStatus = (newStatus: 'Unpaid' | 'Half' | 'Paid') => {
+    if (!scannedBill) return;
+    const updated: ScannedBillRecord = { ...scannedBill, status: newStatus };
+    setScannedBill(updated);
+    setScanHistory(prev =>
+      prev.map(x =>
+        x.invoiceNo === updated.invoiceNo && x.rawText === updated.rawText ? updated : x
+      )
+    );
+  };
+
+  const renderPdfBills = async (dataUrl: string, baseInv: string): Promise<PdfPageItem[]> => {
+    await loadScriptOnce(PDFJS_URL);
+    const pdfjsLib = (window as any).pdfjsLib;
+    if (!pdfjsLib) throw new Error('pdfjsLib unavailable');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = WORKER_URL;
+
+    const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) {
+      bytes[i] = bin.charCodeAt(i);
+    }
+
+    const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+    const totalPages = pdf.numPages || 1;
+    const pages: PdfPageItem[] = [];
+    let lastInvoiceSeen = '';
+
+    for (let p = 1; p <= totalPages; p++) {
+      const page = await pdf.getPage(p);
+      const vp = page.getViewport({ scale: 1.45 });
+      const canvas = document.createElement('canvas');
+      canvas.width = vp.width;
+      canvas.height = vp.height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      }
+
+      let txt = '';
+      try {
+        const tc = await page.getTextContent();
+        txt = (tc.items || []).map((it: any) => it.str || '').join(' ');
+      } catch {
+        txt = '';
+      }
+
+      const details = parsePageTextDetails(txt, baseInv, p);
+
+      const isSameAsPrevInvoice =
+        lastInvoiceSeen !== '' &&
+        details.invoiceNo.toUpperCase() === lastInvoiceSeen.toUpperCase();
+      const shouldHaveQr = !isSameAsPrevInvoice;
+
+      lastInvoiceSeen = details.invoiceNo;
+
+      const payload = buildFullBillQrPayload(agencyCode, details);
+      const qrDataUrl = shouldHaveQr ? await makeRealQrDataUrl(payload) : '';
+
+      pages.push({
+        pageNumber: p,
+        imageUrl: canvas.toDataURL('image/jpeg', 0.86),
+        hasQr: shouldHaveQr,
+        qrDataUrl,
+        qrPayload: payload,
+        details
+      });
+    }
+
+    return pages;
+  };
+
+  const onFilePick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || !files.length) return;
+
+    Array.from(files).forEach((file, idx) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const url = typeof reader.result === 'string' ? reader.result : '';
+        if (!url) return;
+
+        const clean = file.name.replace(/\.[^/.]+$/, '');
+        const invGuess = clean.match(/(?:CG\d{4}[A-Z0-9]+|\d{2}[A-Z]{3}_[A-Z0-9_]+)/i);
+        const baseInv = invGuess ? invGuess[0].toUpperCase() : clean || `BILL-${idx + 1}`;
         const id = `${Date.now()}-${idx}`;
 
         const initialDetails: BillDetails = {
@@ -177,46 +523,4 @@ function buildFullBillQrPayload(agencyCode: string, d: BillDetails): string {
       const refreshed = await Promise.all(
         docs.map(async d => ({
           ...d,
-          pages: await Promise.all(
-            d.pages.map(async p => {
-              const payload = buildFullBillQrPayload(agencyCode, p.details);
-              const qrDataUrl = p.hasQr ? await makeRealQrDataUrl(payload) : '';
-              return { ...p, qrPayload: payload, qrDataUrl };
-            })
-          )
-        }))
-      );
-      if (!cancelled) {
-        setDocs(refreshed);
-        if (printDoc) {
-          setPrintDoc(refreshed.find(x => x.id === printDoc.id) || null);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [agency]);
-
-  const qrPagesCount = (d: UploadedPdfDoc) => d.pages.filter(p => p.hasQr).length;
-
-  return (
-    <div className="erp-root">
-      <style>{`
-        * { box-sizing: border-box; }
-        body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f1f5f9; }
-        .erp-root { min-height: 100vh; padding: 16px; }
-        .wrap { max-width: 980px; margin: 0 auto; }
-        .card { background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 16px; margin-bottom: 16px; }
-        .row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
-        .title { margin: 0; font-size: 22px; color: #fbbf24; font-weight: 800; }
-        .sub { margin: 4px 0 0; font-size: 12px; color: #94a3b8; }
-        .btn { background: #f59e0b; color: #0f172a; border: none; border-radius: 8px; padding: 8px 14px; font-weight: 700; font-size: 12px; cursor: pointer; }
-        .btn:hover { background: #fbbf24; }
-        .btn-dark { background: #334155; color: #f8fafc; border: 1px solid #475569; border-radius: 8px; padding: 7px 12px; font-weight: 700; font-size: 12px; cursor: pointer; }
-        .btn-green { background: #16a34a; color: #fff; border: none; border-radius: 7px; padding: 6px 12px; font-weight: 700; font-size: 12px; cursor: pointer; }
-        .btn-amber { background: #d97706; color: #fff; border: none; border-radius: 7px; padding: 6px 12px; font-weight: 700; font-size: 12px; cursor: pointer; }
-        .btn-red { background: #dc2626; color: #fff; border: none; border-radius: 7px; padding: 6px 12px; font-weight: 700; font-size: 12px; cursor: pointer; }
-        .drop { border: 2px dashed #f59e0b; background: #0f172a; border-radius: 12px; padding: 20px; text-align: center; margin-top: 10px; }
-        .doc-box { background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 14px; margin-top: 12px; }
-        .inp { background:
+          pages:
